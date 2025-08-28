@@ -756,9 +756,6 @@ if st.session_state['1v1_step'] == 3:
         mostrar_ficha(jugador_2)
 
     # -------------------- BLOQUE 6: COMPARATIVA - ELECCIÓN DE MUESTRA --------------------
-    st.markdown("---")
-    st.markdown("### Muestra de comparación")
-
     # Usar SIEMPRE la muestra filtrada del sidebar
     df_muestra = df.copy()
 
@@ -1049,8 +1046,13 @@ if st.session_state['1v1_step'] == 3:
     
     with col2:
         st.pyplot(fig_2)
-    # Información de la muestra debajo de las gráficas (igual que en scatter)
-    st.caption(info_md)
+    # Información de la muestra centrada bajo la gráfica
+    def _center_caption(md_text: str) -> str:
+        html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', md_text)
+        html = html.replace("\n", "<br>")
+        return f"<div style='text-align:center; font-size:0.9rem; opacity:0.85'>{html}</div>"
+
+    st.markdown(_center_caption(info_md), unsafe_allow_html=True)
     col3 = st.columns(1)
 
 

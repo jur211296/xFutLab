@@ -15,7 +15,7 @@ from scipy.stats import rankdata
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
 from utils.utils_visuals import (
-    crear_radar_percentil_plotly
+    crear_pizza_chart
 )
 
 import re
@@ -426,194 +426,157 @@ ids_disponibles = df_all.dropna(subset=["ID", "ID_Display"]).copy()
 ids_disponibles = ids_disponibles[["ID", "ID_Display", "Equipo_data_full", "Temporada"]].drop_duplicates()
 ids_disponibles = ids_disponibles.sort_values("ID_Display", key=lambda s: s.map(_sort_key_az))
 
-## -------------------- FLUJO DE SELECCIÓN DE JUGADORES Y TORNEOS --------------------
-# Funciones auxiliares para resetear selección
-def reset_jugadores():
+# --- Layout principal en 2 columnas (izquierda: pasos; derecha: ficha) ---
+col_izq, col_der = st.columns([1,1])
+col_der_placeholder = col_der.container()
+
+## -------------------- FLUJO DE SELECCIÓN DE JUGADOR Y TORNEOS --------------------
+# Funciones auxiliares para resetear selección (1 jugador)
+
+def reset_jugador():
     st.session_state['1v1_step'] = 1
     st.session_state['1v1_jugador_1_display'] = None
-    st.session_state['1v1_jugador_2_display'] = None
     st.session_state['1v1_torneos_1'] = None
-    st.session_state['1v1_torneos_2'] = None
+
 
 def reset_torneos():
     st.session_state['1v1_step'] = 2
     st.session_state['1v1_torneos_1'] = None
-    st.session_state['1v1_torneos_2'] = None
 
-# Paso 1: Selección de jugadores con expander y título dinámico
-expander_title = "1️⃣ Confirmar jugadores"
-with st.expander(expander_title, expanded=True):
-    if st.session_state['1v1_step'] == 1 or st.session_state['1v1_jugador_1_display'] is None or st.session_state['1v1_jugador_2_display'] is None:
-        with st.form("seleccion_jugadores"):
-            col1, col2 = st.columns(2)
-            with col1:
-                jugador_1_display = st.selectbox(
-                    "Jugador 1",
-                    sorted(ids_disponibles["ID_Display"]),
-                    key="1v1_jugador_1_select"
-                )
-            with col2:
-                jugador_2_display = st.selectbox(
-                    "Jugador 2",
-                    sorted(ids_disponibles["ID_Display"]),
-                    key="1v1_jugador_2_select"
-                )
-            submit_jugadores = st.form_submit_button("Confirmar jugadores")
-        if submit_jugadores:
-            if jugador_1_display == jugador_2_display:
-                st.warning("Debes seleccionar dos jugadores distintos.")
-            else:
+# Paso 1: Selección de JUGADOR BASE con expander y título dinámico
+expander_title = "1️⃣ Confirmar jugador base"
+with col_izq:
+    with st.expander(expander_title, expanded=True):
+        if st.session_state['1v1_step'] == 1 or st.session_state['1v1_jugador_1_display'] is None:
+            with st.form("seleccion_jugador_base"):
+                col1, col2 = st.columns([1,1])
+                with col1:
+                    jugador_1_display = st.selectbox(
+                        "Jugador base",
+                        sorted(ids_disponibles["ID_Display"]),
+                        key="1v1_jugador_1_select"
+                    )
+                submit_jugador = st.form_submit_button("Confirmar jugador")
+            if submit_jugador:
                 st.session_state['1v1_jugador_1_display'] = jugador_1_display
-                st.session_state['1v1_jugador_2_display'] = jugador_2_display
                 st.session_state['1v1_torneos_1'] = None
-                st.session_state['1v1_torneos_2'] = None
                 st.session_state['1v1_step'] = 2
                 st.rerun()
-    else:
-        st.success(f"Seleccionaste: **{st.session_state['1v1_jugador_1_display']}** vs **{st.session_state['1v1_jugador_2_display']}**")
-        if st.button("🔄 Cambiar jugadores"):
-            reset_jugadores()
-            st.rerun()
+        else:
+            st.success(f"Seleccionaste: **{st.session_state['1v1_jugador_1_display']}**")
+            if st.button("🔄 Cambiar jugador"):
+                reset_jugador()
+                st.rerun()
 
-# Paso 2: Selección de torneos para cada jugador
-if st.session_state['1v1_step'] == 2 or st.session_state['1v1_torneos_1'] is None or st.session_state['1v1_torneos_2'] is None:
-    jugador_1 = st.session_state['1v1_jugador_1_display'] or "Jugador 1"
-    jugador_2 = st.session_state['1v1_jugador_2_display'] or "Jugador 2"
+# Paso 2: Selección de torneos para el jugador base
+if st.session_state['1v1_step'] == 2 or st.session_state['1v1_torneos_1'] is None:
     expander_title_torneos = "2️⃣ Confirmar torneos"
 else:
-    jugador_1 = st.session_state['1v1_jugador_1_display'].split()[0]
-    jugador_2 = st.session_state['1v1_jugador_2_display'].split()[0]
     expander_title_torneos = "2️⃣ Confirmar torneos"
 
-if st.session_state['1v1_jugador_1_display'] and st.session_state['1v1_jugador_2_display']:
+if st.session_state['1v1_jugador_1_display']:
     df_jug_1 = ids_disponibles[ids_disponibles["ID_Display"] == st.session_state['1v1_jugador_1_display']]
     if df_jug_1.empty:
-        st.warning("El jugador 1 seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
-        reset_jugadores()
+        st.warning("El jugador seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
+        reset_jugador()
         st.stop()
     jugador_1_row = df_jug_1.iloc[0]
 
-    df_jug_2 = ids_disponibles[ids_disponibles["ID_Display"] == st.session_state['1v1_jugador_2_display']]
-    if df_jug_2.empty:
-        st.warning("El jugador 2 seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
-        reset_jugadores()
-        st.stop()
-    jugador_2_row = df_jug_2.iloc[0]
-
-    # Nombres seguros para UI (prefiere ID_Display; si no existe, cae a Nombre_transfermarket)
-    j1_name = str(jugador_1_row.get('ID_Display', jugador_1_row.get('Nombre_transfermarket', 'Jugador 1')))
-    j2_name = str(jugador_2_row.get('ID_Display', jugador_2_row.get('Nombre_transfermarket', 'Jugador 2')))
+    # Nombres seguros para UI
+    j1_name = str(jugador_1_row.get('ID_Display', jugador_1_row.get('Nombre_transfermarket', 'Jugador base')))
 
     torneos_disp_1 = df_all[df_all["ID"] == jugador_1_row["ID"]]["Torneo"].dropna().tolist()
-    torneos_disp_2 = df_all[df_all["ID"] == jugador_2_row["ID"]]["Torneo"].dropna().tolist()
     torneos_disp_1 = sorted(set(t for sublist in torneos_disp_1 for t in (sublist if isinstance(sublist, list) else [sublist])))
-    torneos_disp_2 = sorted(set(t for sublist in torneos_disp_2 for t in (sublist if isinstance(sublist, list) else [sublist])))
 
-    with st.expander(expander_title_torneos, expanded=True):
-        if st.session_state['1v1_step'] == 2 or st.session_state['1v1_torneos_1'] is None or st.session_state['1v1_torneos_2'] is None:
-            with st.form("seleccion_torneos"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    torneos_sel_1 = st.multiselect(
-                        f"Torneos de {j1_name}",
-                        torneos_disp_1,
-                        default=torneos_disp_1,
-                        key="1v1_torneos_1_select"
+    with col_izq:
+        with st.expander(expander_title_torneos, expanded=True):
+            if st.session_state['1v1_step'] == 2 or st.session_state['1v1_torneos_1'] is None:
+                with st.form("seleccion_torneos"):
+                    col1, col2 = st.columns([1,1])
+                    with col1:
+                        torneos_sel_1 = st.multiselect(
+                            f"Torneos de {j1_name}",
+                            torneos_disp_1,
+                            default=torneos_disp_1,
+                            key="1v1_torneos_1_select"
+                        )
+                    submit_torneos = st.form_submit_button("Confirmar torneos")
+                if submit_torneos:
+                    # Guardar torneos confirmados
+                    st.session_state['1v1_torneos_1'] = torneos_sel_1
+
+                    # --- Overrides para sidebar según Jugador base ---
+                    try:
+                        df_j1_scope = df_all[df_all['ID'].astype(str) == str(jugador_1_row['ID'])].copy()
+                        # Limitar por torneos seleccionados
+                        df_j1_scope = df_j1_scope[df_j1_scope['Torneo'].apply(lambda x: any(t in (x if isinstance(x, list) else [x]) for t in torneos_sel_1))]
+                        # Temporada (tomamos la de la fila seleccionada si está)
+                        st.session_state['1v1_sync_temporada'] = jugador_1_row.get('Temporada', None)
+                        # País o países involucrados en esos torneos
+                        if 'Pais' in df_j1_scope.columns:
+                            paises_sync = sorted(df_j1_scope['Pais'].dropna().astype(str).unique().tolist())
+                        else:
+                            paises_sync = []
+                        # Fallback a país del jugador si no se pudo inferir de torneos
+                        if not paises_sync and 'Pais' in jugador_1_row.index and pd.notna(jugador_1_row['Pais']):
+                            paises_sync = [str(jugador_1_row['Pais'])]
+                        st.session_state['1v1_sync_paises'] = paises_sync
+                        # Torneos seleccionados de Jugador base
+                        st.session_state['1v1_sync_torneos'] = torneos_sel_1
+
+                        # Posición general del Jugador base (derivada de su scope o, si no, del total en df_all)
+                        pos_gen_sync = None
+                        if 'Posicion_general' in df_j1_scope.columns:
+                            vals = df_j1_scope['Posicion_general'].dropna().astype(str).unique().tolist()
+                            if vals:
+                                pos_gen_sync = vals[0]
+                        if not pos_gen_sync and 'Posicion_general' in df_all.columns:
+                            vals = df_all.loc[df_all['ID'].astype(str) == str(jugador_1_row['ID']), 'Posicion_general'] \
+                                       .dropna().astype(str).unique().tolist()
+                            if vals:
+                                pos_gen_sync = vals[0]
+                        st.session_state['1v1_sync_pos_gen'] = pos_gen_sync
+                    except Exception:
+                        pass
+
+                    # Avanzar al step 3
+                    st.session_state['1v1_step'] = 3
+                    st.rerun()
+            else:
+                col_a, col_b = st.columns([1,1])
+                with col_a:
+                    st.success(
+                        f"Torneos seleccionados para **{j1_name}**: {', '.join(st.session_state['1v1_torneos_1'])}"
                     )
-                with col2:
-                    torneos_sel_2 = st.multiselect(
-                        f"Torneos de {j2_name}",
-                        torneos_disp_2,
-                        default=torneos_disp_2,
-                        key="1v1_torneos_2_select"
-                    )
-                submit_torneos = st.form_submit_button("Confirmar torneos")
-            if submit_torneos:
-                # Guardar torneos confirmados
-                st.session_state['1v1_torneos_1'] = torneos_sel_1
-                st.session_state['1v1_torneos_2'] = torneos_sel_2
+                    if st.button("🔄 Cambiar torneos"):
+                        reset_torneos()
+                        st.rerun()
+                # La ficha técnica completa se mostrará en la segunda columna en el Paso 3
 
-                # --- Overrides para sidebar según Jugador 1 ---
-                try:
-                    df_j1_scope = df_all[df_all['ID'].astype(str) == str(jugador_1_row['ID'])].copy()
-                    # Limitar por torneos seleccionados
-                    df_j1_scope = df_j1_scope[df_j1_scope['Torneo'].apply(lambda x: any(t in (x if isinstance(x, list) else [x]) for t in torneos_sel_1))]
-                    # Temporada (tomamos la de la fila seleccionada si está)
-                    st.session_state['1v1_sync_temporada'] = jugador_1_row.get('Temporada', None)
-                    # País o países involucrados en esos torneos
-                    if 'Pais' in df_j1_scope.columns:
-                        paises_sync = sorted(df_j1_scope['Pais'].dropna().astype(str).unique().tolist())
-                    else:
-                        paises_sync = []
-                    # Fallback a país del jugador si no se pudo inferir de torneos
-                    if not paises_sync and 'Pais' in jugador_1_row.index and pd.notna(jugador_1_row['Pais']):
-                        paises_sync = [str(jugador_1_row['Pais'])]
-                    st.session_state['1v1_sync_paises'] = paises_sync
-                    # Torneos seleccionados de Jugador 1
-                    st.session_state['1v1_sync_torneos'] = torneos_sel_1
-
-                    # Posición general de Jugador 1 (derivada de su scope o, si no, del total en df_all)
-                    pos_gen_sync = None
-                    if 'Posicion_general' in df_j1_scope.columns:
-                        vals = df_j1_scope['Posicion_general'].dropna().astype(str).unique().tolist()
-                        if vals:
-                            pos_gen_sync = vals[0]
-                    if not pos_gen_sync and 'Posicion_general' in df_all.columns:
-                        vals = df_all.loc[df_all['ID'].astype(str) == str(jugador_1_row['ID']), 'Posicion_general'] \
-                                   .dropna().astype(str).unique().tolist()
-                        if vals:
-                            pos_gen_sync = vals[0]
-                    st.session_state['1v1_sync_pos_gen'] = pos_gen_sync
-                except Exception:
-                    pass
-
-                # Avanzar al step 3
-                st.session_state['1v1_step'] = 3
-                st.rerun()
-        else:
-            st.success(
-                f"Torneos seleccionados:\n\n- **{j1_name}**: {', '.join(st.session_state['1v1_torneos_1'])}\n"
-                f"- **{j2_name}**: {', '.join(st.session_state['1v1_torneos_2'])}"
-            )
-            if st.button("🔄 Cambiar torneos"):
-                reset_torneos()
-                st.rerun()
-
-# -------------------- BLOQUE 5: AGREGACIÓN Y FICHA TÉCNICA DE JUGADORES --------------------
+# -------------------- BLOQUE 5: AGREGACIÓN Y FICHA TÉCNICA DEL JUGADOR --------------------
 # Paso 3: Si todo confirmado, resto de la lógica
-if st.session_state['1v1_step'] == 3:
-    # Obtener SIEMPRE los objetos correctos (Series) para jugador_1_row y jugador_2_row
+if st.session_state.get('1v1_step') == 3:
+    # Obtener SIEMPRE el objeto correcto (Series) para jugador_1_row
     df_jug_1 = ids_disponibles[ids_disponibles["ID_Display"] == st.session_state['1v1_jugador_1_display']]
     if df_jug_1.empty:
-        st.warning("El jugador 1 seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
-        reset_jugadores()
+        st.warning("El jugador seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
+        reset_jugador()
         st.stop()
     jugador_1_row = df_jug_1.iloc[0]
-
-    df_jug_2 = ids_disponibles[ids_disponibles["ID_Display"] == st.session_state['1v1_jugador_2_display']]
-    if df_jug_2.empty:
-        st.warning("El jugador 2 seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
-        reset_jugadores()
-        st.stop()
-    jugador_2_row = df_jug_2.iloc[0]
     torneos_1 = st.session_state['1v1_torneos_1']
-    torneos_2 = st.session_state['1v1_torneos_2']
 
-    # -------------------- BLOQUE 5A (actualizado): construir muestra final y agregar --------------------
+    # -------------------- BLOQUE 5A: construir muestra final y agregar (solo jugador base) --------------------
     def extraer_muestra_jugador(df_base: pd.DataFrame, jugador_id, torneos: list) -> pd.DataFrame:
         df_b = df_base.copy()
         df_b["Torneo"] = df_b["Torneo"].apply(lambda x: x if isinstance(x, list) else ([x] if pd.notna(x) else []))
         jug_id_str = str(jugador_id)
         return df_b[(df_b["ID"].astype(str) == jug_id_str) & (df_b["Torneo"].apply(lambda ts: any(t in ts for t in torneos)))]
 
-    # Partimos de la muestra filtrada (df) y añadimos los registros de ambos jugadores según torneos elegidos
+    # Partimos de la muestra filtrada (df) y añadimos los registros del jugador según torneos elegidos
     df_union = df.copy()
     df_j1_extra = extraer_muestra_jugador(df_all, jugador_1_row["ID"], torneos_1)
-    df_j2_extra = extraer_muestra_jugador(df_all, jugador_2_row["ID"], torneos_2)
     if not df_j1_extra.empty:
         df_union = pd.concat([df_union, df_j1_extra], ignore_index=True)
-    if not df_j2_extra.empty:
-        df_union = pd.concat([df_union, df_j2_extra], ignore_index=True)
 
     # Agregación por ID (suma numéricas excepto Edad, identidad por first, Torneo como lista única)
     if "Torneo" in df_union.columns:
@@ -639,46 +602,44 @@ if st.session_state['1v1_step'] == 3:
     if all(col in df_muestra_proc.columns for col in ["Equipo_data", "Pais_diminutivo"]) and "Equipo_data_full" not in df_muestra_proc.columns:
         df_muestra_proc["Equipo_data_full"] = df_muestra_proc["Equipo_data"].astype(str) + " " + df_muestra_proc["Pais_diminutivo"].astype(str)
 
-    # Fichas de jugadores agregadas (para siguiente etapa)
-    j1_agg = df_muestra_proc.loc[df_muestra_proc["ID"].astype(str) == str(jugador_1_row["ID"])]
-    j2_agg = df_muestra_proc.loc[df_muestra_proc["ID"].astype(str) == str(jugador_2_row["ID"])]
-    if j1_agg.empty or j2_agg.empty:
-        st.warning("No se pudo preparar la muestra agregada para alguno de los jugadores. Revisa los torneos seleccionados.")
+    # Ficha del jugador agregada (para siguiente etapa)
+    j1_agg = df_muestra_proc.loc[df_muestra_proc["ID"].astype(str) == str(jugador_1_row["ID"])].copy()
+    if j1_agg.empty:
+        st.warning("No se pudo preparar la muestra agregada para el jugador. Revisa los torneos seleccionados.")
         st.stop()
 
     jugador_1 = j1_agg.iloc[0]
-    jugador_2 = j2_agg.iloc[0]
 
     # Dejar lista la base procesada para pasos siguientes
     df_agg = df_muestra_proc.copy()
 
-    # -------------------- BLOQUE 5B: Ficha técnica de los jugadores seleccionados --------------------
-    st.markdown("---")
-    st.markdown("### Ficha técnica de los jugadores seleccionados")
-    # -- Estilos modernos para tarjeta de jugador (ligero y responsivo)
-    st.markdown(
-        """
-        <style>
-        .player-card{display:flex;gap:16px;padding:14px 16px;border-radius:14px;
-                      background:linear-gradient(180deg,rgba(0,0,0,.04),rgba(0,0,0,.02));
-                      border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px rgba(0,0,0,.06);position:relative}
-        .player-card:before{content:'';position:absolute;inset:0;border-top:4px solid var(--accent,#444);border-radius:14px}
-        .pc-left{display:flex;flex-direction:column;align-items:center;gap:8px;min-width:84px}
-        .pc-avatar{width:68px;height:68px;border-radius:50%;object-fit:cover;filter:grayscale(15%)}
-        .pc-crest{width:52px;height:52px;object-fit:contain;border-radius:10px;background:#fff;padding:4px;border:1px solid rgba(0,0,0,.08)}
-        .pc-right{flex:1}
-        .pc-name{font-weight:700;font-size:1.2rem;line-height:1.2}
-        .pc-sub{opacity:.7;font-size:.85rem;margin-top:2px}
-        .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;margin-right:6px;background:rgba(0,0,0,.06)}
-        .badge.accent{background:var(--accent,#444);color:#fff}
-        .pc-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin-top:10px}
-        .stat .label{font-size:.78rem;opacity:.7}
-        .stat .value{font-weight:600}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    col1, col2 = st.columns(2)
+    # -------------------- BLOQUE 5B: FICHA TÉCNICA DEL JUGADOR SELECCIONADO --------------------
+    with col_der_placeholder:
+        st.markdown("---")
+        st.markdown("### Ficha técnica del jugador seleccionado")
+        # -- Estilos modernos para tarjeta de jugador (ligero y responsivo)
+        st.markdown(
+            """
+            <style>
+            .player-card{display:flex;gap:16px;padding:14px 16px;border-radius:14px;
+                          background:linear-gradient(180deg,rgba(0,0,0,.04),rgba(0,0,0,.02));
+                          border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px rgba(0,0,0,.06);position:relative}
+            .player-card:before{content:'';position:absolute;inset:0;border-top:4px solid var(--accent,#444);border-radius:14px}
+            .pc-left{display:flex;flex-direction:column;align-items:center;gap:8px;min-width:84px}
+            .pc-avatar{width:68px;height:68px;border-radius:50%;object-fit:cover;filter:grayscale(15%)}
+            .pc-crest{width:52px;height:52px;object-fit:contain;border-radius:10px;background:#fff;padding:4px;border:1px solid rgba(0,0,0,.08)}
+            .pc-right{flex:1}
+            .pc-name{font-weight:700;font-size:1.2rem;line-height:1.2}
+            .pc-sub{opacity:.7;font-size:.85rem;margin-top:2px}
+            .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;margin-right:6px;background:rgba(0,0,0,.06)}
+            .badge.accent{background:var(--accent,#444);color:#fff}
+            .pc-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin-top:10px}
+            .stat .label{font-size:.78rem;opacity:.7}
+            .stat .value{font-weight:600}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # Función para mostrar la ficha técnica de un jugador (tarjeta moderna)
     def mostrar_ficha(jugador):
@@ -750,17 +711,16 @@ if st.session_state['1v1_step'] == 3:
         """
         st.markdown(html, unsafe_allow_html=True)
 
-    with col1:
+    # Mostrar la ficha en la **segunda** columna
+    with col_der_placeholder:
         mostrar_ficha(jugador_1)
-    with col2: 
-        mostrar_ficha(jugador_2)
 
-    # -------------------- BLOQUE 6: COMPARATIVA - ELECCIÓN DE MUESTRA --------------------
+    # -------------------- BLOQUE 6: MUESTRA DE COMPARACIÓN --------------------
     # Usar SIEMPRE la muestra filtrada del sidebar
     df_muestra = df.copy()
 
-    # Excluir jugadores seleccionados de la muestra para percentiles comparativos
-    df_muestra = df_muestra[~df_muestra["ID"].isin([jugador_1["ID"], jugador_2["ID"]])]
+    # Excluir jugador seleccionado de la muestra para percentiles comparativos
+    df_muestra = df_muestra[~df_muestra["ID"].isin([jugador_1["ID"]])]
 
     # ---- Texto estilo página 1 ----
     n_jugadores = df_muestra["ID"].nunique() if "ID" in df_muestra.columns else len(df_muestra)
@@ -808,7 +768,7 @@ if st.session_state['1v1_step'] == 3:
         "Todas" if set(pos_det_sel) == set(pos_det_opciones) else ", ".join(sorted(set(pos_det_sel)))
     )
 
-    # Info estilo página 1 (4 líneas) - con saltos de línea markdown forzados (2 espacios + \n)
+    # Info estilo página 1 (4 líneas)
     info_md = (
         f"La muestra filtrada contiene **{n_jugadores} jugadores únicos**.  \n"
         f"**Temporada:** {temporada_txt} - **País del equipo:** {paises_txt} - **Torneo:** {torneos_txt}  \n"
@@ -821,12 +781,10 @@ if st.session_state['1v1_step'] == 3:
     st.session_state["muestra_percentil"] = "Muestra del sidebar"
 
     # -------------------- BLOQUE 7: SELECCIÓN DE MÉTRICAS PARA RADAR (WIZARD AVANZADO) --------------------
-    # Esta sección permite seleccionar las métricas a comparar, agrupadas por bloques relevantes
     st.markdown("---")
-    st.markdown("### Comparativa de jugadores en base a percentiles")
+    st.markdown("### Comparativa del jugador en base a percentiles")
 
-    # --- Selector avanzado de métricas por tipo relevante (idéntico a página 4) ---
-    # Determinar tipos y defaults por posición
+    # --- Selector avanzado de métricas por tipo relevante ---
     pos_det_j1 = jugador_1.get("Posicion_detallada", "")
     pos_gen_j1 = jugador_1.get("Posicion_general", "")
     nombre_j1 = jugador_1.get("Nombre_transfermarket", "")
@@ -874,7 +832,6 @@ if st.session_state['1v1_step'] == 3:
     for bloque, metricas_bloque in bloques_metricas_wizard.items():
         metricas_bloque_validas = [m for m in metricas_bloque if m in metricas_validas]
         sugeridas = [m for m in metricas_default_posicion if m in metricas_bloque_validas]
-        # Ya no rellenar con otras métricas si sugeridas está vacío
         metricas_por_tipo_default[bloque] = sugeridas
 
     # --- Resetear selección de métricas si cambia el jugador o la posición detallada ---
@@ -950,13 +907,11 @@ if st.session_state['1v1_step'] == 3:
         seleccionadas = seleccionadas[:12]
 
     # Construir DataFrame de comparación (muestra del sidebar procesada con métricas)
-    # Usaremos la misma preparación de métricas, pero aplicada a la muestra del sidebar (excluye a los dos jugadores)
     df_comparacion, _, _, _, metricas_invertir_ctx = aplicar_metricas_personalizadas(df_muestra.copy(), df_metricas)
 
     # Definir el título y subtítulo del gráfico de radar
     titulo_grafico = (
-        f"{jugador_1['Nombre_transfermarket']} {jugador_1['Temporada']} ({jugador_1['Equipo_data']}) "
-        f"vs {jugador_2['Nombre_transfermarket']} {jugador_2['Temporada']} ({jugador_2['Equipo_data']})"
+        f"{jugador_1['Nombre_transfermarket']} {jugador_1['Temporada']} ({jugador_1['Equipo_data']})"
     )
 
     # Posiciones de la muestra para el subtítulo (si existen)
@@ -977,17 +932,18 @@ if st.session_state['1v1_step'] == 3:
         df_comparacion.get("Temporada", pd.Series([temporada]))
         .dropna().astype(str).unique().tolist()
     )
-    temporada_txt = ", ".join(sorted(_temps)) if _temps else str(temporada)
+    temporada_txt_ctx = ", ".join(sorted(_temps)) if _temps else str(temporada)
 
     subtitulo_grafico = (
         f"Comparativa vs {', '.join(pos_det_dimin) if pos_det_dimin else 'muestra filtrada'} "
-        f"de {', '.join(torneos)} en {temporada_txt}"
+        f"de {', '.join(torneos)} en {temporada_txt_ctx}"
     )
 
     # Limitar el número de métricas seleccionadas para los gráficos radar
     max_metricas = 12
     if len(seleccionadas) > max_metricas:
-        seleccionadas = seleccionadas[:max_metricas]  # Mantener primeras métricas seleccionadas
+        seleccionadas = seleccionadas[:max_metricas]
+
     # Ordenar métricas seleccionadas por bloque y luego alfabéticamente
     bloques_orden = [
         metricas_portero, metricas_fisicas, metricas_centros,
@@ -998,105 +954,163 @@ if st.session_state['1v1_step'] == 3:
     for bloque in bloques_orden:
         seleccionadas_en_bloque = sorted([m for m in seleccionadas if m in bloque])
         seleccionadas_radar.extend(seleccionadas_en_bloque)
+
     st.info(f"🔢 Máximo de métricas permitidas : {max_metricas}")
-    # Calcular percentiles contexto
-    percentiles_contexto = {}
-    for metrica in seleccionadas:
-        serie = df_comparacion[metrica].replace(0, np.nan).dropna()
-        percentiles_contexto[metrica] = {
-            idx: rankdata(serie, method='average')[i] / len(serie)
-            for i, idx in enumerate(serie.index)
-        }
-    # Cálculo promedio muestra
-    promedio_valores = df_comparacion[seleccionadas].replace(0, np.nan).mean().to_frame().T
-    promedio_valores['Nombre_transfermarket'] = 'Promedio muestra'
-    promedio_valores['Equipo_data'] = ''
-    promedio_valores['Temporada'] = ''
-    promedio_valores['ID'] = 'PROMEDIO'
-    promedio_valores.index = [999]
-    percentiles_contexto.update({
-        metrica: {**percentiles_contexto.get(metrica, {}), 999: rankdata(df_comparacion[metrica].replace(0, np.nan).dropna().tolist() + [promedio_valores.iloc[0][metrica]], method='average')[-1] / (len(df_comparacion) + 1)}
-        for metrica in seleccionadas
-    })
+
     # Forzar el modo según el tema actual
-    modo_claro = (get_theme_type() == "light")
-    fig = crear_radar_percentil_plotly(
-        [jugador_1, jugador_2],
-        [f"{jugador_1['Nombre_transfermarket']} - {jugador_1['Equipo_data']} - {jugador_1['Temporada']}",
-            f"{jugador_2['Nombre_transfermarket']} - {jugador_2['Equipo_data']} - {jugador_2['Temporada']}"],
-        seleccionadas_radar,
-        df_comparacion,
+modo_claro = (get_theme_type() == "light")
+# ==================== BLOQUE FINAL: VISUALIZACIÓN pizza ====================
+st.markdown("### Comparativas visuales del jugador")
+st.markdown("#### Pizza principal por métricas seleccionadas")
+
+# Determinar lista final de métricas para el gráfico (ordenada por bloques)
+try:
+    metricas_finales = list(seleccionadas_radar) if len(seleccionadas_radar) > 0 else list(seleccionadas)
+except Exception:
+    metricas_finales = list(seleccionadas)
+
+# Contexto: usar la muestra ya transformada con métricas (df_comparacion)
+df_viz = df_comparacion[df_comparacion[metricas_finales].notna().all(axis=1)].copy()
+if df_viz.empty:
+    st.warning("⚠️ No hay suficientes jugadores para calcular percentiles en la muestra actual.")
+    st.stop()
+
+# Encabezados
+titulo_grafico = f"{jugador_1['Nombre_transfermarket']} {jugador_1['Temporada']} ({jugador_1['Equipo_data']})"
+posiciones_dimin = list(dict.fromkeys([
+    diminutivos_pos.get(p, p)
+    for p in df_comparacion.get("Posicion_detallada", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
+]))
+_torneos_base = st.session_state.get('1v1_torneos_1', torneos_sel)
+torneos_str = ', '.join([t for t in _torneos_base if t])
+_temporada_j1 = jugador_1.get("Temporada", temporada)
+subtitulo_grafico = f"vs {', '.join(posiciones_dimin) if posiciones_dimin else 'muestra filtrada'} de {torneos_str} en {_temporada_j1}"
+
+col_izq_p, col_centro_p, col_der_p = st.columns([0.3, 0.4, 0.3])
+with col_centro_p:
+    fig = crear_pizza_chart(
+        jugador=jugador_1,
+        df_contexto=df_viz,
+        metricas=metricas_finales,
+        considerar_dict=considerar_dict,
+        tipos_dict=tipos_dict,
+        metricas_invertir=metricas_invertir_ctx,
         titulo=titulo_grafico,
         subtitulo=None,
-        modo_claro=modo_claro
+        modo_claro=modo_claro,
     )
-    col1 = st.columns(1)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key="radar_chart", theme=None) 
-    # Información de la muestra centrada bajo la gráfica
-    def _center_caption(md_text: str) -> str:
-        html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', md_text)
-        html = html.replace("\n", "<br>")
-        return f"<div style='text-align:center; font-size:0.9rem; opacity:0.85'>{html}</div>"
+    st.pyplot(fig)
 
-    st.markdown(_center_caption(info_md), unsafe_allow_html=True)
-    col2 = st.columns(1)
+#
+# Caption centrado bajo la gráfica principal (antes de la tabla)
 
-    # Nombres de columnas
-    nombre_1 = f"{jugador_1['Nombre_transfermarket']} - {jugador_1['Temporada']}"
-    nombre_2 = f"{jugador_2['Nombre_transfermarket']} - {jugador_2['Temporada']}"
-    col_perc_1 = "Percentil 1"
-    col_perc_2 = "Percentil 2"
+def _center_caption(md_text: str) -> str:
+    html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', md_text)
+    html = html.replace("\n", "<br>")
+    return f"<div style='text-align:center; font-size:0.9rem; opacity:0.85'>{html}</div>"
 
-    # JS renderer dinámico para barras
-    def barra_percentil_js(es_jugador_1=True):
-        return JsCode(f"""
-        function(params) {{
-            var value = params.value;
-            var rowData = params.data;
-            var perc1 = parseInt(rowData['Percentil 1']);
-            var perc2 = parseInt(rowData['Percentil 2']);
-            var color;
-            if ({'true' if es_jugador_1 else 'false'}) {{
-                color = perc1 > perc2 ? '#2ecc71' : perc1 < perc2 ? '#e74c3c' : '#f1c40f';
-            }} else {{
-                color = perc2 > perc1 ? '#2ecc71' : perc2 < perc1 ? '#e74c3c' : '#f1c40f';
-            }}
-            params.eGridCell.innerHTML = "<div style='display:flex; align-items:center; justify-content:space-between; height:100%;'>" +
-                "<div style='flex-grow:1; background-color: #3a3a3a; border-radius: 5px; height: 5px; display:flex; align-items:center; margin:auto;'>" +
-                "<div style='width: " + value + "%; background-color: " + color + "; height: 5px; border-radius: 5px;'></div>" +
-                "</div><div style='margin-left:8px;'>" + value + "%</div></div>";
-        }}
-        """)
+st.markdown(_center_caption(info_md), unsafe_allow_html=True)
 
-    # Datos
-    datos_tabla = []
-    for metrica in seleccionadas_radar:
-        val_1 = jugador_1[metrica]
-        val_fmt_1 = formatear_valor(metrica, val_1)
-        perc_1 = min(max(obtener_percentiles(jugador_1, df_comparacion, [metrica], metricas_invertir_ctx)[0], 0), 100)
+# Tabla moderna: valores y percentiles por métrica (mono‑jugador)
+st.markdown("#### Valores y percentiles por métrica")
 
-        val_2 = jugador_2[metrica]
-        val_fmt_2 = formatear_valor(metrica, val_2)
-        perc_2 = min(max(obtener_percentiles(jugador_2, df_comparacion, [metrica], metricas_invertir_ctx)[0], 0), 100)
+# Calcular percentiles por métrica vs muestra (df_comparacion no incluye al jugador)
+filas = []
+for m in metricas_finales:
+    # Valor del jugador
+    v = jugador_1.get(m, np.nan)
+    # Serie de la muestra
+    serie = pd.to_numeric(df_comparacion[m], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if len(serie) == 0 or pd.isna(v):
+        pct = np.nan
+    else:
+        try:
+            v_f = float(v)
+        except Exception:
+            v_f = np.nan
+        if pd.isna(v_f):
+            pct = np.nan
+        else:
+            # Percentil: proporción de valores <= v
+            pct = float((serie <= v_f).mean()) * 100.0
+            # Si la métrica se invierte (menor es mejor), reflejar percentil
+            if isinstance(metricas_invertir_ctx, (set, list, dict)) and (m in metricas_invertir_ctx):
+                pct = 100.0 - pct
+    filas.append({
+        "Métrica": m,
+        "Valor": formatear_valor(m, v),
+        "Percentil": None if pd.isna(pct) else int(round(np.clip(pct, 0, 100)))
+    })
 
-        datos_tabla.append({
-            "Métrica": metrica,
-            nombre_1: val_fmt_1,
-            col_perc_1: perc_1,
-            nombre_2: val_fmt_2,
-            col_perc_2: perc_2
-        })
+# Renderizar en HTML con estilo moderno y barra de porcentaje por percentil
+tbl_css = """
+<style>
+.table-modern{width:100%;border-collapse:separate;border-spacing:0 8px}
+.table-modern th{font-size:.85rem;text-align:left;opacity:.7;padding:6px 10px}
+.table-modern td{background:rgba(0,0,0,.03);padding:10px;border:1px solid rgba(0,0,0,.06)}
+.table-modern td:first-child{border-top-left-radius:10px;border-bottom-left-radius:10px}
+.table-modern td:last-child{border-top-right-radius:10px;border-bottom-right-radius:10px}
+.badge-metric{font-weight:600}
+.pbar-wrap{display:flex;align-items:center;gap:10px}
+.pbar{flex:1;height:10px;border-radius:999px;background:rgba(0,0,0,.08);overflow:hidden}
+.pbar>span{display:block;height:100%;border-radius:inherit}
+.pct-label{width:42px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+</style>
+"""
 
-    df_tabla = pd.DataFrame(datos_tabla).sort_values(by=col_perc_1, ascending=False)
+rows_html = []
+for r in filas:
+    pct = r["Percentil"]
+    # Color en HSL del rojo (0) al verde (120)
+    hue = 120 if pct is None else int(round((pct/100.0)*120))
+    width = 0 if pct is None else pct
+    bar_html = f"<div class='pbar'><span style='width:{width}%;background:hsl({hue},70%,45%);'></span></div>"
+    pct_html = "N/D" if pct is None else f"{pct}%"
+    rows_html.append(
+        f"<tr>"
+        f"<td class='badge-metric'>{_sanitize_text(r['Métrica'])}</td>"
+        f"<td>{_sanitize_text(r['Valor'])}</td>"
+        f"<td><div class='pbar-wrap'>{bar_html}<div class='pct-label'>{pct_html}</div></div></td>"
+        f"</tr>"
+    )
 
-    # AgGrid
-    gb = GridOptionsBuilder.from_dataframe(df_tabla)
-    gb.configure_grid_options(domLayout='normal', pagination=False, suppressHorizontalScroll=False, autoSizeAllColumns=True)
-    gb.configure_column(col_perc_1, cellRenderer=barra_percentil_js(es_jugador_1=True))
-    gb.configure_column(col_perc_2, cellRenderer=barra_percentil_js(es_jugador_1=False))
-    fila_altura = 35  # Altura promedio por fila en píxeles
-    padding_extra = 10  # Espacio extra para encabezados, barras, etc.
+tabla_html = (
+    tbl_css +
+    "<table class='table-modern'>"
+    "<thead><tr><th>Métrica</th><th>Valor</th><th>Percentil</th></tr></thead>"
+    "<tbody>" + "".join(rows_html) + "</tbody></table>"
+)
+st.markdown(tabla_html, unsafe_allow_html=True)
 
-    altura_dinamica = len(df_tabla) * fila_altura + padding_extra
-    AgGrid(df_tabla, gridOptions=gb.build(), allow_unsafe_jscode=True, height = altura_dinamica, fit_columns_on_grid_load=True,
-            key=f"radar_simple_{jugador_1['ID']}_{jugador_2['ID']}")
+st.markdown("#### Comparativas por tipo de métrica")
+bloques = [
+    ("Físicas", metricas_fisicas, "#6FBF73"),
+    ("Centros", metricas_centros, "#2F80ED"),
+    ("Construcción general", metricas_construccion_general, "#2F80ED"),
+    ("Construcción ofensiva", metricas_construccion_ofensiva, "#2F80ED"),
+    ("Ofensivas", metricas_ofensivas, "#EB5757"),
+    ("Balón parado", metricas_balon_parado, "#EB5757")
+]
+for i in range(0, len(bloques), 3):
+    col1, col2, col3 = st.columns(3)
+    for (titulo, lista_metricas, color), col in zip(bloques[i:i+3], [col1, col2, col3]):
+        considerar_tipo = ["/90", "Porcentaje"] if modo_90 else ["Totales", "Porcentaje"]
+        metricas_filtradas = [
+            m for m in lista_metricas
+            if considerar_dict.get(m) in considerar_tipo and m in df_comparacion.columns
+        ]
+        if not metricas_filtradas:
+            continue
+        fig = crear_pizza_chart(
+            jugador=jugador_1,
+            df_contexto=df_comparacion,
+            metricas=metricas_filtradas,
+            considerar_dict=considerar_dict,
+            tipos_dict=tipos_dict,
+            metricas_invertir=metricas_invertir_ctx,
+            titulo=f"{titulo} – {jugador_1['Nombre_transfermarket']} {jugador_1['Temporada']} ({jugador_1['Equipo_data']})",
+            subtitulo=None,
+            modo_claro=modo_claro,
+        )
+        with col:
+            st.pyplot(fig)

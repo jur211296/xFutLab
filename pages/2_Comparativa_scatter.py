@@ -756,9 +756,6 @@ if st.session_state['1v1_step'] == 3:
         mostrar_ficha(jugador_2)
 
     # -------------------- BLOQUE 6: COMPARATIVA - ELECCIÓN DE MUESTRA --------------------
-    st.markdown("---")
-    st.markdown("### Muestra de comparación")
-
     # Usar SIEMPRE la muestra filtrada del sidebar
     df_muestra = df.copy()
 

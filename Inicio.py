@@ -24,7 +24,7 @@ def pagina_inicio():
     # No mostramos nada aún en el lienzo central, lo dejamos vacío.
     # Puedes usar 'theme_type' más adelante para condicionar estilos o gráficos.
     # st.write(f"(debug) Tema actual: {theme_type}")
-    st.title("🏠 Bienvenido a la herramienta de Scouting Sudamericano")
+    st.title("🏠 Bienvenido a xFutLab by Jürgen Schmidt")
     st.write("Usa el menú superior para navegar entre módulos.")
 
 # ---- Declaración de páginas para la navegación superior ----
@@ -43,10 +43,10 @@ pages = {
         st.Page("pages/2_Comparativa_pizza.py", title="🍕 1v1 - Pizza"),
         st.Page("pages/2_Comparativa_scatter.py", title="📉 1v1 - Muestras"),
     ],
-    #"Análisis individual": [
-    #    st.Page("pages/5_⚽️_Perfil_detallado_individual.py", title="Perfil detallado por jugador"),
-    #    st.Page("pages/6_🎯_Comparativa_detallada_individual.py", title="Comparativa detallada individual"),
-    #],
+    "Análisis individual": [
+        st.Page("pages/3_Perfil_individual_statsbomb.py", title="🧨 Perfil - Statsbomb"),
+        st.Page("pages/3_Perfil_individual_pizza.py", title="🍕 Perfil - Pizza"),
+    ],
     #"Scouting": [
     #    st.Page("pages/4_🔎_Búsqueda_avanzada.py", title="Búsqueda avanzada"),
     #],

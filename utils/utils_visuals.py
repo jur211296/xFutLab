@@ -210,6 +210,7 @@ def crear_pizza_chart(jugador, df_contexto, metricas, considerar_dict, tipos_dic
 
     background_color = "#FFFFFF" if modo_claro else "#0f1116"
     text_color = "#000000" if modo_claro else "#FFFFFF"
+    value_color = "#FFFFFF"
 
     baker = PyPizza(
         params=metricas_wrapped,
@@ -232,7 +233,7 @@ def crear_pizza_chart(jugador, df_contexto, metricas, considerar_dict, tipos_dic
         param_location=110,
         kwargs_slices=dict(edgecolor=text_color, linewidth=1, zorder=2),
         kwargs_params=dict(color=text_color, fontsize=10, va="center"),
-        kwargs_values=dict(color=text_color, fontsize=10, zorder=3,
+        kwargs_values=dict(color=value_color, fontsize=10, zorder=3,
                            bbox=dict(edgecolor=text_color, facecolor=background_color, boxstyle="round,pad=0.2", linewidth=1))
     )
 
@@ -289,7 +290,7 @@ def crear_radar_statsbomb(jugador, df_contexto, seleccionadas, metricas_invertir
                      kwargs_radar={'facecolor': color_primario, 'alpha': 1, 'edgecolor': edgecolor_radar, 'linewidth': 1},
                      kwargs_rings={'facecolor': color_secundario, 'alpha': 1})
 
-    radar.draw_param_labels(ax=ax['radar'], fontsize=6, color=text_color)
+    radar.draw_param_labels(ax=ax['radar'], fontsize=4.5, color=text_color)
     radar.draw_range_labels(ax=ax['radar'], fontsize=4, color=text_color)
     ax['title'].text(0.5, 0.7, titulo, fontsize=7, ha='center', color=text_color, fontweight='bold')
     fig.set_facecolor(facecolor_main)
