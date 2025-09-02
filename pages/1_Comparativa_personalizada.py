@@ -201,19 +201,36 @@ else:
 st.sidebar.markdown("## ⚙️ Filtros generales")
 
  # --- Temporada ---
-temporadas_disponibles = sorted(df["Temporada"].dropna().unique(), reverse=True) if "Temporada" in df.columns else []
+ # Mostrar temporadas como enteros y filtrar de forma robusta (2025, 2025.0, "2025.0" -> 2025)
+if "Temporada" in df.columns:
+    _temp_series_num = pd.to_numeric(df["Temporada"], errors="coerce").dropna()
+    temporadas_disponibles = sorted(
+        _temp_series_num.round().astype(int).unique().tolist(), reverse=True
+    )
+else:
+    temporadas_disponibles = []
+
 if not temporadas_disponibles:
     st.error("No hay temporadas disponibles en los datos.")
     st.stop()
 
-default_temporada = next((t for t in temporadas_disponibles if "2025" in str(t)), temporadas_disponibles[0])
-idx_temp = temporadas_disponibles.index(default_temporada) if default_temporada in temporadas_disponibles else 0
+# Default a 2025 si existe; si no, la más reciente
+default_temporada = 2025 if 2025 in temporadas_disponibles else temporadas_disponibles[0]
+idx_temp = temporadas_disponibles.index(default_temporada)
+
+# Selector siempre en enteros (sin decimales)
 temporada = st.sidebar.selectbox(
     "Temporada",
     temporadas_disponibles,
     index=idx_temp
 )
-df_temp = df[df["Temporada"] == temporada].copy()
+
+# Igualamos por entero con conversión robusta del DF
+if "Temporada" in df.columns:
+    _temp_col = pd.to_numeric(df["Temporada"], errors="coerce").round().astype("Int64")
+    df_temp = df[_temp_col == int(temporada)].copy()
+else:
+    df_temp = df.copy()
 
 # --- País del equipo ---
 paises_opciones = sorted(df_temp["Pais"].dropna().unique()) if "Pais" in df_temp.columns else []
@@ -279,20 +296,64 @@ with st.expander("🔍 Filtros de jugadores a analizar", expanded=True):
         st.warning("No hay datos para los filtros actuales de País/Torneo.")
         st.stop()
 
+    # --- Defaults reactivos para Minutos y M90s (1/3 del máximo) + preinicialización segura ---
+    # Contexto que fuerza reseteo al cambiar Temporada/Torneo/Equipo
+    ctx_hash = f"{int(temporada)}|{';'.join(sorted(map(str, torneos_sel)))}|{';'.join(sorted(map(str, equipos_sel)))}"
+
+    # Máximos actuales en la muestra base
+    min_jugados_max = int(df_filtros.get("Minutos_jugados", pd.Series([0])).max())
+    max_m90 = int(df_filtros.get("M90s_jugados", pd.Series([0])).max())
+
+    def _third_of(n: int, step: int = 1) -> int:
+      try:
+          n = int(n)
+      except Exception:
+          return 0
+      if n <= 0:
+          return 0
+      val = int(np.ceil(n / 3))
+      if step > 1:
+          val = int(np.ceil(val / step) * step)
+      return min(val, n)
+
+    default_min_jug = _third_of(min_jugados_max, step=50)
+    default_min_m90 = _third_of(max_m90, step=1)
+
+    # Reseteo al cambiar el contexto
+    if st.session_state.get("pers_ctx_hash_minmax") != ctx_hash:
+        st.session_state["pers_min_jugados_value"] = default_min_jug
+        st.session_state["pers_min_m90s_value"] = default_min_m90
+        st.session_state["pers_ctx_hash_minmax"] = ctx_hash
+
+    # Preinicializar para evitar warning (no combinar value= con key)
+    st.session_state.setdefault("pers_min_jugados_value", default_min_jug)
+    st.session_state.setdefault("pers_min_m90s_value", default_min_m90)
+
     col4, col5, col6 = st.columns(3)
     with col4:
-        min_jugados_max = int(df_filtros["Minutos_jugados"].max()) if "Minutos_jugados" in df_filtros.columns else 0
-        min_jugados = st.slider("Minutos jugados (mínimo)", 0, max(min_jugados_max, 0), min(300, max(min_jugados_max, 0)), step=50)
+        min_jugados = st.slider(
+            "Minutos jugados (mínimo)",
+            0,
+            max(min_jugados_max, 0),
+            step=50,
+            key="pers_min_jugados_value",
+        )
     with col5:
-        max_m90 = int(df_filtros["M90s_jugados"].max()) if "M90s_jugados" in df_filtros.columns else 0
-        min_m90s = st.slider("Partidos completos jugados (M90s)", 0, max(max_m90, 0), min(3, max(max_m90, 0)), step=1)
+        min_m90s = st.slider(
+            "Partidos completos jugados (M90s)",
+            0,
+            max(max_m90, 0),
+            step=1,
+            key="pers_min_m90s_value",
+        )
     with col6:
         if "Edad" in df_filtros.columns:
             edad_min = int(df_filtros["Edad"].min())
             edad_max = int(df_filtros["Edad"].max())
-            edad_range = st.slider("Edad", edad_min, edad_max, (edad_min, edad_max))
+            default_edad_min = max(15, edad_min)
+            edad_range = st.slider("Edad", edad_min, edad_max, (default_edad_min, edad_max))
         else:
-            edad_range = (0, 100)
+            edad_range = (15, 100)
 
     col7, col8, col9 = st.columns(3)
     with col7:

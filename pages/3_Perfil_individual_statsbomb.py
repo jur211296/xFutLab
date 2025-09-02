@@ -108,6 +108,30 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+# -- Ensanchar los selectbox para ver etiquetas completas --
+st.markdown(
+    """
+    <style>
+    /* Ensanchar los selectbox para ver etiquetas completas */
+    [data-testid="stSelectbox"] div[data-baseweb="select"]{min-width:100%!important;width:100%!important}
+    [data-testid="stSelectbox"]{width:100%!important}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# -- Ensanchar también el panel desplegable (popover) de los selectbox --
+st.markdown(
+    """
+    <style>
+    /* Aumenta el ancho del popover (lista de opciones) para que no corte los textos largos */
+    div[data-baseweb="popover"] > div { min-width: 520px !important; max-width: 80vw !important; }
+    /* Evita que el valor visible dentro del input se recorte demasiado */
+    [data-testid="stSelectbox"] div[data-baseweb="select"] div[role="combobox"] { min-width: 100% !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # === Colores dependientes del tema ===
 def _theme_colors():
@@ -424,7 +448,42 @@ if "Equipo_data_full" not in df_all.columns and "Equipo_data" in df_all.columns:
 
 ids_disponibles = df_all.dropna(subset=["ID", "ID_Display"]).copy()
 ids_disponibles = ids_disponibles[["ID", "ID_Display", "Equipo_data_full", "Temporada"]].drop_duplicates()
-ids_disponibles = ids_disponibles.sort_values("ID_Display", key=lambda s: s.map(_sort_key_az))
+
+# Normalizar etiquetas: quitar prefijo ". " si existe (pero mantener iniciales tipo "K.")
+def _clean_display_label(s):
+    try:
+        s = str(s).strip()
+    except Exception:
+        return ""
+    if s.startswith(". "):
+        s = s[2:].lstrip()
+    return s
+
+ids_disponibles["ID_Display_clean"] = ids_disponibles["ID_Display"].astype(str).map(_clean_display_label)
+# Excluir los que (tras limpieza) siguen empezando con "."
+ids_disponibles = ids_disponibles[~ids_disponibles["ID_Display_clean"].str.startswith(".")]
+# Ordenar A→Z por la etiqueta limpia (ignora tildes/mayúsculas)
+ids_disponibles = ids_disponibles.sort_values("ID_Display_clean", key=lambda s: s.map(_sort_key_az))
+
+# --- Etiqueta UI: corregir temporada decimal y dar más contexto (equipo)
+def _fmt_season(t):
+    try:
+        return str(int(float(t)))
+    except Exception:
+        return str(t)
+
+def _make_ui_label(row):
+    name = str(row.get("ID_Display_clean", "")).strip()
+    # Si el nombre ya trae el año, sólo normalizamos el posible ".0"
+    name = re.sub(r"\b(\d{4})(?:\.0)\b", r"\1", name)
+    if re.search(r"\b\d{4}\b", name):
+        return name
+    year = _fmt_season(row.get("Temporada", ""))
+    team = str(row.get("Equipo_data_full", "")).strip()
+    return f"{name} {year}" + (f" ({team})" if team else "")
+
+ids_disponibles["ID_Display_ui"] = ids_disponibles.apply(_make_ui_label, axis=1)
+ids_disponibles = ids_disponibles.drop_duplicates(subset=["ID", "ID_Display_ui"])  # asegurar unicidad visual
 
 # --- Layout principal en 2 columnas (izquierda: pasos; derecha: ficha) ---
 col_izq, col_der = st.columns([1,1])
@@ -449,16 +508,18 @@ with col_izq:
     with st.expander(expander_title, expanded=True):
         if st.session_state['1v1_step'] == 1 or st.session_state['1v1_jugador_1_display'] is None:
             with st.form("seleccion_jugador_base"):
-                col1, col2 = st.columns([1,1])
-                with col1:
-                    jugador_1_display = st.selectbox(
-                        "Jugador base",
-                        sorted(ids_disponibles["ID_Display"]),
-                        key="1v1_jugador_1_select"
-                    )
+                jugador_1_display = st.selectbox(
+                    "Jugador base",
+                    ids_disponibles["ID_Display_ui"].tolist(),
+                    key="1v1_jugador_1_select"
+                )
                 submit_jugador = st.form_submit_button("Confirmar jugador")
             if submit_jugador:
-                st.session_state['1v1_jugador_1_display'] = jugador_1_display
+                try:
+                    _orig = ids_disponibles.loc[ids_disponibles["ID_Display_ui"] == jugador_1_display, "ID_Display"].iloc[0]
+                except Exception:
+                    _orig = jugador_1_display
+                st.session_state['1v1_jugador_1_display'] = _orig
                 st.session_state['1v1_torneos_1'] = None
                 st.session_state['1v1_step'] = 2
                 st.rerun()
@@ -492,14 +553,12 @@ if st.session_state['1v1_jugador_1_display']:
         with st.expander(expander_title_torneos, expanded=True):
             if st.session_state['1v1_step'] == 2 or st.session_state['1v1_torneos_1'] is None:
                 with st.form("seleccion_torneos"):
-                    col1, col2 = st.columns([1,1])
-                    with col1:
-                        torneos_sel_1 = st.multiselect(
-                            f"Torneos de {j1_name}",
-                            torneos_disp_1,
-                            default=torneos_disp_1,
-                            key="1v1_torneos_1_select"
-                        )
+                    torneos_sel_1 = st.multiselect(
+                        f"Torneos de {j1_name}",
+                        torneos_disp_1,
+                        default=torneos_disp_1,
+                        key="1v1_torneos_1_select"
+                    )
                     submit_torneos = st.form_submit_button("Confirmar torneos")
                 if submit_torneos:
                     # Guardar torneos confirmados
@@ -623,7 +682,7 @@ if st.session_state.get('1v1_step') == 3:
             <style>
             .player-card{display:flex;gap:16px;padding:14px 16px;border-radius:14px;
                           background:linear-gradient(180deg,rgba(0,0,0,.04),rgba(0,0,0,.02));
-                          border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px rgba(0,0,0,.06);position:relative}
+                      border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px rgba(0,0,0,.06);position:relative;margin-bottom:12px}
             .player-card:before{content:'';position:absolute;inset:0;border-top:4px solid var(--accent,#444);border-radius:14px}
             .pc-left{display:flex;flex-direction:column;align-items:center;gap:8px;min-width:84px}
             .pc-avatar{width:68px;height:68px;border-radius:50%;object-fit:cover;filter:grayscale(15%)}
@@ -958,13 +1017,56 @@ if st.session_state.get('1v1_step') == 3:
     st.info(f"🔢 Máximo de métricas permitidas : {max_metricas}")
 
     # Forzar el modo según el tema actual
-    modo_claro = (get_theme_type() == "light")
+modo_claro = (get_theme_type() == "light")
 # ==================== BLOQUE FINAL: VISUALIZACIÓN statsbomb ====================
+# No mostrar nada del bloque final hasta que haya jugador y torneos confirmados
+if not (
+    st.session_state.get('1v1_step') == 3
+    and bool(st.session_state.get('1v1_jugador_1_display'))
+    and bool(st.session_state.get('1v1_torneos_1'))
+):
+    # Detenemos la ejecución aquí para evitar mensajes como
+    # "No hay métricas seleccionadas..." cuando aún no se han confirmado los pasos.
+    st.stop()
 st.markdown("### Comparativas visuales del jugador")
 st.markdown("#### Radar principal por métricas seleccionadas")
 
 usar_percentiles_sb = st.checkbox("Mostrar Statsbomb con percentiles", value=True)
-metricas_finales = list(seleccionadas)
+ # --- Selección robusta de métricas para el perfil ---
+_sel = locals().get("seleccionadas", None)
+if _sel is None:
+    _sel = st.session_state.get("1v1_metricas_sel")
+
+# Derivar modo (por 90 o totales) desde session_state; por defecto True
+_modo_90 = st.session_state.get("wizard_metricas_1v1", {}).get("modo_90", True)
+_tipos_validos = ["/90", "Porcentaje"] if _modo_90 else ["Totales", "Porcentaje"]
+
+# Fallback por posición si no hay selección previa
+if not _sel:
+    try:
+        pos_det_ref = jugador_1.get("Posicion_detallada", "")
+    except Exception:
+        pos_det_ref = ""
+    _defaults_pos = metricas_default_por_posicion.get(pos_det_ref, []) if 'metricas_default_por_posicion' in globals() else []
+    if 'considerar_dict' in globals() and isinstance(considerar_dict, dict):
+        _sel = [m for m in _defaults_pos if considerar_dict.get(m) in _tipos_validos][:12]
+    else:
+        _sel = _defaults_pos[:12]
+
+# Último fallback: primeras columnas numéricas del dataframe de contexto, si está disponible
+try:
+    if (not _sel) and 'df_comparacion' in globals():
+        num_cols = [c for c in df_comparacion.columns if pd.api.types.is_numeric_dtype(df_comparacion[c])]
+        _sel = num_cols[:10]
+except Exception:
+    pass
+
+metricas_finales = list(_sel or [])
+# Acotar a 5–12 métricas como regla de negocio
+if len(metricas_finales) < 5:
+    metricas_finales = metricas_finales[:5]
+elif len(metricas_finales) > 12:
+    metricas_finales = metricas_finales[:12]
 if not metricas_finales:
     st.warning("No hay métricas seleccionadas para el radar. Selecciona o aplica cambios en el módulo de métricas.")
     st.stop()

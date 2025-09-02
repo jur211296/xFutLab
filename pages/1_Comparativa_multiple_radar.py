@@ -12,10 +12,10 @@ import plotly.express as px
 
 from scipy.stats import rankdata
 
-from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+
 
 from utils.utils_visuals import (
-    crear_pizza_chart
+    crear_radar_percentil_plotly
 )
 
 import re
@@ -128,12 +128,42 @@ def _theme_colors():
             "linea_25": "#d62728",
             "linea_75": "#2ca02c",
         }
+
 _c = _theme_colors()
 bg_color   = _c["bg_color"]
 ejes_color = _c["ejes_color"]
 font_color = _c["font_color"]
 linea_25   = _c["linea_25"]
 linea_75   = _c["linea_75"]
+
+# === Paleta de 4 colores bien contrastados y utilidades de estilo para radares ===
+PLAYER_PALETTE = ["#EF476F", "#118AB2", "#06D6A0", "#FFD166"]  # magenta, azul, verde, amarillo
+
+def _hex_to_rgb(h: str) -> tuple[int,int,int]:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def _apply_palette_and_title(fig, palette=PLAYER_PALETTE, title_size=16):
+    """Aplica colores contrastados a las trazas del radar y reduce el tamaño del título."""
+    try:
+        for i, tr in enumerate(getattr(fig, "data", [])):
+            col = palette[i % len(palette)]
+            r, g, b = _hex_to_rgb(col)
+            rgba_fill = f"rgba({r},{g},{b},0.20)"
+            # Para trazas tipo scatterpolar
+            if hasattr(tr, "line"):
+                tr.line.color = col
+                tr.line.width = 2.5
+            if hasattr(tr, "marker"):
+                tr.marker.color = col
+            if hasattr(tr, "fillcolor"):
+                tr.fillcolor = rgba_fill
+    except Exception:
+        pass
+    try:
+        fig.update_layout(title_font=dict(size=title_size))
+    except Exception:
+        pass
 
 # ========================================================================
 # -------------------- BLOQUE 2: PREPARACIÓN Y CARGA DE DATOS --------------------
@@ -598,6 +628,15 @@ if '1v1_torneos_1' not in st.session_state:
     st.session_state['1v1_torneos_1'] = None
 if '1v1_torneos_2' not in st.session_state:
     st.session_state['1v1_torneos_2'] = None
+# Inicializar opcionales (jugador 3 y 4, y sus torneos)
+if '1v1_jugador_3_display' not in st.session_state:
+    st.session_state['1v1_jugador_3_display'] = None
+if '1v1_jugador_4_display' not in st.session_state:
+    st.session_state['1v1_jugador_4_display'] = None
+if '1v1_torneos_3' not in st.session_state:
+    st.session_state['1v1_torneos_3'] = None
+if '1v1_torneos_4' not in st.session_state:
+    st.session_state['1v1_torneos_4'] = None
 
 # -------------------- BLOQUE NUEVO (actualizado): CATÁLOGO DE JUGADORES (SIN FILTROS) --------------------
 # IDs y labels para selección 1v1 usando TODO el dataset (sin respetar filtros)
@@ -650,42 +689,87 @@ def reset_jugadores():
     st.session_state['1v1_jugador_2_display'] = None
     st.session_state['1v1_torneos_1'] = None
     st.session_state['1v1_torneos_2'] = None
+    st.session_state['1v1_jugador_3_display'] = None
+    st.session_state['1v1_jugador_4_display'] = None
+    st.session_state['1v1_torneos_3'] = None
+    st.session_state['1v1_torneos_4'] = None
 
 def reset_torneos():
     st.session_state['1v1_step'] = 2
     st.session_state['1v1_torneos_1'] = None
     st.session_state['1v1_torneos_2'] = None
+    st.session_state['1v1_torneos_3'] = None
+    st.session_state['1v1_torneos_4'] = None
 
 # Paso 1: Selección de jugadores con expander y título dinámico
 expander_title = "1️⃣ Confirmar jugadores"
 with st.expander(expander_title, expanded=True):
     if st.session_state['1v1_step'] == 1 or st.session_state['1v1_jugador_1_display'] is None or st.session_state['1v1_jugador_2_display'] is None:
         with st.form("seleccion_jugadores"):
+            opciones = ids_disponibles["ID_Display_clean"].tolist()
+            NINGUNO = "— (Ninguno) —"
+            opciones_opt = [NINGUNO] + opciones
+
             col1, col2 = st.columns(2)
             with col1:
                 jugador_1_label = st.selectbox(
                     "Jugador 1",
-                    ids_disponibles["ID_Display_clean"].tolist(),
+                    opciones,
                     key="1v1_jugador_1_select"
                 )
             with col2:
                 jugador_2_label = st.selectbox(
                     "Jugador 2",
-                    ids_disponibles["ID_Display_clean"].tolist(),
+                    opciones,
                     key="1v1_jugador_2_select"
                 )
+
+            col3, col4 = st.columns(2)
+            with col3:
+                jugador_3_label = st.selectbox(
+                    "Jugador 3 (opcional)",
+                    opciones_opt,
+                    index=0,
+                    key="1v1_jugador_3_select"
+                )
+            with col4:
+                jugador_4_label = st.selectbox(
+                    "Jugador 4 (opcional)",
+                    opciones_opt,
+                    index=0,
+                    key="1v1_jugador_4_select"
+                )
+
             submit_jugadores = st.form_submit_button("Confirmar jugadores")
         if submit_jugadores:
-            if jugador_1_label == jugador_2_label:
-                st.warning("Debes seleccionar dos jugadores distintos.")
+            # Construir lista de seleccionados (ignorando "Ninguno")
+            seleccionados = [jugador_1_label, jugador_2_label]
+            if jugador_3_label != NINGUNO:
+                seleccionados.append(jugador_3_label)
+            if jugador_4_label != NINGUNO:
+                seleccionados.append(jugador_4_label)
+
+            # Validación: al menos 2 distintos
+            if len(set(seleccionados)) < 2:
+                st.warning("Debes seleccionar al menos **dos jugadores distintos**.")
             else:
-                # Mapear etiqueta limpia → etiqueta original para mantener la lógica interna
-                jugador_1_display = label_to_orig.get(jugador_1_label, jugador_1_label)
-                jugador_2_display = label_to_orig.get(jugador_2_label, jugador_2_label)
-                st.session_state['1v1_jugador_1_display'] = jugador_1_display
-                st.session_state['1v1_jugador_2_display'] = jugador_2_display
+                # Mapear etiqueta limpia → etiqueta original
+                mapped = [label_to_orig.get(lbl, lbl) for lbl in seleccionados]
+
+                # Persistir los dos primeros para mantener compatibilidad con el resto del código
+                st.session_state['1v1_jugador_1_display'] = mapped[0]
+                st.session_state['1v1_jugador_2_display'] = mapped[1]
+
+                # Guardar opcionales (si existen)
+                st.session_state['1v1_jugador_3_display'] = mapped[2] if len(mapped) >= 3 else None
+                st.session_state['1v1_jugador_4_display'] = mapped[3] if len(mapped) >= 4 else None
+
+                # Resetear torneos (solo se usan los de 1 y 2 en el flujo actual)
                 st.session_state['1v1_torneos_1'] = None
                 st.session_state['1v1_torneos_2'] = None
+                st.session_state['1v1_torneos_3'] = None
+                st.session_state['1v1_torneos_4'] = None
+
                 st.session_state['1v1_step'] = 2
                 st.rerun()
     else:
@@ -694,109 +778,117 @@ with st.expander(expander_title, expanded=True):
             reset_jugadores()
             st.rerun()
 
-# Paso 2: Selección de torneos para cada jugador
-if st.session_state['1v1_step'] == 2 or st.session_state['1v1_torneos_1'] is None or st.session_state['1v1_torneos_2'] is None:
-    jugador_1 = st.session_state['1v1_jugador_1_display'] or "Jugador 1"
-    jugador_2 = st.session_state['1v1_jugador_2_display'] or "Jugador 2"
+
+# Paso 2: Selección de torneos para cada jugador (hasta 4)
+# Solo mostrar este paso cuando ya se confirmó el Step 1 (J1 y J2 definidos)
+if (
+    st.session_state.get('1v1_step', 1) == 2
+    and st.session_state.get('1v1_jugador_1_display')
+    and st.session_state.get('1v1_jugador_2_display')
+):
+    # Construir lista de jugadores seleccionados (1..4)
+    seleccionados_info = []
+    for i in (1, 2, 3, 4):
+        lbl = st.session_state.get(f'1v1_jugador_{i}_display')
+        if not lbl:
+            continue
+        df_jug = ids_disponibles[ids_disponibles["ID_Display"] == lbl]
+        if df_jug.empty:
+            st.warning(f"El jugador {i} seleccionado ya no está disponible en los datos actuales. Vuelve a seleccionarlo.")
+            reset_jugadores()
+            st.stop()
+        row = df_jug.iloc[0]
+        # Torneos disponibles para este jugador
+        tor_disp = df_all[df_all["ID"] == row["ID"]]["Torneo"].dropna().tolist()
+        tor_disp = sorted(set(t for sub in tor_disp for t in (sub if isinstance(sub, list) else [sub])))
+        seleccionados_info.append({
+            "idx": i,
+            "row": row,
+            "name": str(row.get('ID_Display', row.get('Nombre_transfermarket', f'Jugador {i}'))),
+            "tor_disp": tor_disp
+        })
+
     expander_title_torneos = "2️⃣ Confirmar torneos"
-else:
-    jugador_1 = st.session_state['1v1_jugador_1_display'].split()[0]
-    jugador_2 = st.session_state['1v1_jugador_2_display'].split()[0]
-    expander_title_torneos = "2️⃣ Confirmar torneos"
-
-if st.session_state['1v1_jugador_1_display'] and st.session_state['1v1_jugador_2_display']:
-    df_jug_1 = ids_disponibles[ids_disponibles["ID_Display"] == st.session_state['1v1_jugador_1_display']]
-    if df_jug_1.empty:
-        st.warning("El jugador 1 seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
-        reset_jugadores()
-        st.stop()
-    jugador_1_row = df_jug_1.iloc[0]
-
-    df_jug_2 = ids_disponibles[ids_disponibles["ID_Display"] == st.session_state['1v1_jugador_2_display']]
-    if df_jug_2.empty:
-        st.warning("El jugador 2 seleccionado ya no está disponible en los datos actuales. Por favor, vuelve a seleccionarlo.")
-        reset_jugadores()
-        st.stop()
-    jugador_2_row = df_jug_2.iloc[0]
-
-    # Nombres seguros para UI (prefiere ID_Display; si no existe, cae a Nombre_transfermarket)
-    j1_name = str(jugador_1_row.get('ID_Display', jugador_1_row.get('Nombre_transfermarket', 'Jugador 1')))
-    j2_name = str(jugador_2_row.get('ID_Display', jugador_2_row.get('Nombre_transfermarket', 'Jugador 2')))
-
-    torneos_disp_1 = df_all[df_all["ID"] == jugador_1_row["ID"]]["Torneo"].dropna().tolist()
-    torneos_disp_2 = df_all[df_all["ID"] == jugador_2_row["ID"]]["Torneo"].dropna().tolist()
-    torneos_disp_1 = sorted(set(t for sublist in torneos_disp_1 for t in (sublist if isinstance(sublist, list) else [sublist])))
-    torneos_disp_2 = sorted(set(t for sublist in torneos_disp_2 for t in (sublist if isinstance(sublist, list) else [sublist])))
-
     with st.expander(expander_title_torneos, expanded=True):
-        if st.session_state['1v1_step'] == 2 or st.session_state['1v1_torneos_1'] is None or st.session_state['1v1_torneos_2'] is None:
-            with st.form("seleccion_torneos"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    torneos_sel_1 = st.multiselect(
-                        f"Torneos de {j1_name}",
-                        torneos_disp_1,
-                        default=torneos_disp_1,
-                        key="1v1_torneos_1_select"
+        with st.form("seleccion_torneos_multi"):
+            # Renderizar multiselects en 2 columnas por fila
+            cols = st.columns(2)
+            col_ptr = 0
+            selecciones_tmp = {}
+            for info in seleccionados_info:
+                c = cols[col_ptr]
+                with c:
+                    key_sel = f"1v1_torneos_{info['idx']}_select"
+                    saved = st.session_state.get(f"1v1_torneos_{info['idx']}")
+                    selecciones_tmp[info['idx']] = st.multiselect(
+                        f"Torneos de {info['name']}",
+                        info["tor_disp"],
+                        default=(saved if saved else info["tor_disp"]),
+                        key=key_sel
                     )
-                with col2:
-                    torneos_sel_2 = st.multiselect(
-                        f"Torneos de {j2_name}",
-                        torneos_disp_2,
-                        default=torneos_disp_2,
-                        key="1v1_torneos_2_select"
-                    )
-                submit_torneos = st.form_submit_button("Confirmar torneos")
-            if submit_torneos:
-                # Guardar torneos confirmados
-                st.session_state['1v1_torneos_1'] = torneos_sel_1
-                st.session_state['1v1_torneos_2'] = torneos_sel_2
-
-                # --- Overrides para sidebar según Jugador 1 ---
-                try:
-                    df_j1_scope = df_all[df_all['ID'].astype(str) == str(jugador_1_row['ID'])].copy()
-                    # Limitar por torneos seleccionados
+                col_ptr = (col_ptr + 1) % 2
+                if col_ptr == 0:
+                    cols = st.columns(2)
+            submit_torneos = st.form_submit_button("Confirmar torneos")
+        if submit_torneos:
+            # Guardar torneos confirmados para todos los jugadores mostrados
+            for info in seleccionados_info:
+                st.session_state[f'1v1_torneos_{info["idx"]}'] = selecciones_tmp.get(info["idx"], [])
+            # --- Overrides para sidebar según Jugador 1 (si existe) ---
+            try:
+                j1 = next((x for x in seleccionados_info if x["idx"] == 1), None)
+                if j1 is not None:
+                    row = j1["row"]
+                    torneos_sel_1 = st.session_state.get("1v1_torneos_1", [])
+                    df_j1_scope = df_all[df_all['ID'].astype(str) == str(row['ID'])].copy()
                     df_j1_scope = df_j1_scope[df_j1_scope['Torneo'].apply(lambda x: any(t in (x if isinstance(x, list) else [x]) for t in torneos_sel_1))]
-                    # Temporada (tomamos la de la fila seleccionada si está)
-                    st.session_state['1v1_sync_temporada'] = jugador_1_row.get('Temporada', None)
-                    # País o países involucrados en esos torneos
+                    # Temporada
+                    st.session_state['1v1_sync_temporada'] = row.get('Temporada', None)
+                    # País(es)
                     if 'Pais' in df_j1_scope.columns:
                         paises_sync = sorted(df_j1_scope['Pais'].dropna().astype(str).unique().tolist())
                     else:
                         paises_sync = []
-                    # Fallback a país del jugador si no se pudo inferir de torneos
-                    if not paises_sync and 'Pais' in jugador_1_row.index and pd.notna(jugador_1_row['Pais']):
-                        paises_sync = [str(jugador_1_row['Pais'])]
+                    if not paises_sync and 'Pais' in row.index and pd.notna(row['Pais']):
+                        paises_sync = [str(row['Pais'])]
                     st.session_state['1v1_sync_paises'] = paises_sync
-                    # Torneos seleccionados de Jugador 1
+                    # Torneos del J1
                     st.session_state['1v1_sync_torneos'] = torneos_sel_1
-
-                    # Posición general de Jugador 1 (derivada de su scope o, si no, del total en df_all)
+                    # Posición general
                     pos_gen_sync = None
                     if 'Posicion_general' in df_j1_scope.columns:
                         vals = df_j1_scope['Posicion_general'].dropna().astype(str).unique().tolist()
                         if vals:
                             pos_gen_sync = vals[0]
                     if not pos_gen_sync and 'Posicion_general' in df_all.columns:
-                        vals = df_all.loc[df_all['ID'].astype(str) == str(jugador_1_row['ID']), 'Posicion_general'] \
+                        vals = df_all.loc[df_all['ID'].astype(str) == str(row['ID']), 'Posicion_general'] \
                                    .dropna().astype(str).unique().tolist()
                         if vals:
                             pos_gen_sync = vals[0]
                     st.session_state['1v1_sync_pos_gen'] = pos_gen_sync
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-                # Avanzar al step 3
-                st.session_state['1v1_step'] = 3
-                st.rerun()
+            # Avanzar al step 3
+            st.session_state['1v1_step'] = 3
+            st.rerun()
+elif st.session_state.get('1v1_step', 1) >= 3:
+    # Mostrar resumen de torneos seleccionados para TODOS los jugadores elegidos
+    lines = []
+    for i in (1, 2, 3, 4):
+        lbl = st.session_state.get(f'1v1_jugador_{i}_display')
+        if not lbl:
+            continue
+        name = lbl
+        tor = st.session_state.get(f'1v1_torneos_{i}', [])
+        if tor:
+            lines.append(f"- **{name}**: {', '.join(tor)}")
         else:
-            st.success(
-                f"Torneos seleccionados:\n\n- **{j1_name}**: {', '.join(st.session_state['1v1_torneos_1'])}\n"
-                f"- **{j2_name}**: {', '.join(st.session_state['1v1_torneos_2'])}"
-            )
-            if st.button("🔄 Cambiar torneos"):
-                reset_torneos()
-                st.rerun()
+            lines.append(f"- **{name}**: (sin torneos seleccionados)")
+    st.success("Torneos seleccionados:\n\n" + "\n".join(lines))
+    if st.button("🔄 Cambiar torneos"):
+        reset_torneos()
+        st.rerun()
 
 # -------------------- BLOQUE 5: AGREGACIÓN Y FICHA TÉCNICA DE JUGADORES --------------------
 # Paso 3: Si todo confirmado, resto de la lógica
@@ -825,42 +917,63 @@ if st.session_state['1v1_step'] == 3:
         jug_id_str = str(jugador_id)
         return df_b[(df_b["ID"].astype(str) == jug_id_str) & (df_b["Torneo"].apply(lambda ts: any(t in ts for t in torneos)))]
 
-    # Partimos de la muestra filtrada (df) y añadimos los registros de ambos jugadores según torneos elegidos
-    df_union = df.copy()
-    df_j1_extra = extraer_muestra_jugador(df_all, jugador_1_row["ID"], torneos_1)
-    df_j2_extra = extraer_muestra_jugador(df_all, jugador_2_row["ID"], torneos_2)
-    if not df_j1_extra.empty:
-        df_union = pd.concat([df_union, df_j1_extra], ignore_index=True)
-    if not df_j2_extra.empty:
-        df_union = pd.concat([df_union, df_j2_extra], ignore_index=True)
+    # >>> NUEVO: construir dataset SOLO con los torneos seleccionados para cada jugador <<<
+    players_to_add = [
+        (jugador_1_row["ID"], torneos_1),
+        (jugador_2_row["ID"], torneos_2),
+    ]
+    for i in (3, 4):
+        lab = st.session_state.get(f'1v1_jugador_{i}_display')
+        tor = st.session_state.get(f'1v1_torneos_{i}')
+        if lab and tor:
+            row_i = ids_disponibles[ids_disponibles["ID_Display"] == lab]
+            if not row_i.empty:
+                players_to_add.append((row_i.iloc[0]["ID"], tor))
 
-    # Agregación por ID (suma numéricas excepto Edad, identidad por first, Torneo como lista única)
-    if "Torneo" in df_union.columns:
-        columnas_sumables = [c for c in df_union.columns if is_numeric_dtype(df_union[c]) and c not in ["Edad"]]
+    # Recoger filas por jugador (sólo sus torneos seleccionados)
+    df_players_rows = []
+    for pid, torneos_sel_i in players_to_add:
+        if torneos_sel_i:
+            extra = extraer_muestra_jugador(df_all, pid, torneos_sel_i)
+            if not extra.empty:
+                df_players_rows.append(extra)
+
+    if not df_players_rows:
+        st.warning("No se encontraron registros para los torneos seleccionados de los jugadores.")
+        st.stop()
+
+    df_players = pd.concat(df_players_rows, ignore_index=True)
+
+    # Agregación por ID (suma numéricas excepto Edad; tomar 'first' para campos de identidad)
+    if "Torneo" in df_players.columns:
+        columnas_sumables = [c for c in df_players.columns if is_numeric_dtype(df_players[c]) and c not in ["Edad"]]
         agg_spec = {col: "sum" for col in columnas_sumables}
         opcionales_first = [
             "Nombre_transfermarket", "ID_Equipo", "logo_equipo", "Equipo_data",
             "Posicion_general", "Posicion_detallada", "Pais",
             "Pais_diminutivo", "Nacionalidad_2", "Nacionalidad",
-            "Edad", "Temporada", "Color primario", "Equipo_data_full"
+            "Edad", "Temporada", "Color primario", "Equipo_data_full", "ID_Display"
         ]
         for col in opcionales_first:
-            if col in df_union.columns:
+            if col in df_players.columns:
                 agg_spec[col] = "first"
-        agg_spec["Torneo"] = lambda x: list(set(t for lst in x.apply(lambda v: v if isinstance(v, list) else [v]) for t in lst if pd.notna(t)))
-        df_muestra_agg = df_union.groupby("ID", as_index=False).agg(agg_spec)
+        # Torneo como lista única
+        agg_spec["Torneo"] = lambda x: list(set(
+            t for lst in x.apply(lambda v: v if isinstance(v, list) else [v]) for t in lst if pd.notna(t)
+        ))
+        df_players_agg = df_players.groupby("ID", as_index=False).agg(agg_spec)
     else:
-        df_muestra_agg = df_union.copy()
+        df_players_agg = df_players.copy()
 
-    # Aplicar métricas personalizadas y preparar columnas finales
-    df_muestra_proc, considerar_dict, tipos_dict, metricas_porcentaje, metricas_invertir = aplicar_metricas_personalizadas(df_muestra_agg, df_metricas)
+    # Aplicar métricas personalizadas y preparar columnas finales (sólo jugadores seleccionados)
+    df_players_proc, considerar_dict, tipos_dict, metricas_porcentaje, metricas_invertir = aplicar_metricas_personalizadas(df_players_agg, df_metricas)
 
-    if all(col in df_muestra_proc.columns for col in ["Equipo_data", "Pais_diminutivo"]) and "Equipo_data_full" not in df_muestra_proc.columns:
-        df_muestra_proc["Equipo_data_full"] = df_muestra_proc["Equipo_data"].astype(str) + " " + df_muestra_proc["Pais_diminutivo"].astype(str)
+    if all(col in df_players_proc.columns for col in ["Equipo_data", "Pais_diminutivo"]) and "Equipo_data_full" not in df_players_proc.columns:
+        df_players_proc["Equipo_data_full"] = df_players_proc["Equipo_data"].astype(str) + " " + df_players_proc["Pais_diminutivo"].astype(str)
 
     # Fichas de jugadores agregadas (para siguiente etapa)
-    j1_agg = df_muestra_proc.loc[df_muestra_proc["ID"].astype(str) == str(jugador_1_row["ID"])]
-    j2_agg = df_muestra_proc.loc[df_muestra_proc["ID"].astype(str) == str(jugador_2_row["ID"])]
+    j1_agg = df_players_proc.loc[df_players_proc["ID"].astype(str) == str(jugador_1_row["ID"])]
+    j2_agg = df_players_proc.loc[df_players_proc["ID"].astype(str) == str(jugador_2_row["ID"])]
     if j1_agg.empty or j2_agg.empty:
         st.warning("No se pudo preparar la muestra agregada para alguno de los jugadores. Revisa los torneos seleccionados.")
         st.stop()
@@ -868,8 +981,26 @@ if st.session_state['1v1_step'] == 3:
     jugador_1 = j1_agg.iloc[0]
     jugador_2 = j2_agg.iloc[0]
 
+    # (Opcionales) Preparar jugador 3 y 4 si fueron seleccionados y existen en la muestra agregada
+    jugadores_extra = []
+    for idx_opt in (3, 4):
+        lab_opt = st.session_state.get(f'1v1_jugador_{idx_opt}_display')
+        if not lab_opt:
+            continue
+        df_opt = ids_disponibles[ids_disponibles["ID_Display"] == lab_opt]
+        if df_opt.empty:
+            continue
+        pid_opt = df_opt.iloc[0]["ID"]
+        row_opt_agg = df_players_proc.loc[df_players_proc["ID"].astype(str) == str(pid_opt)]
+        if not row_opt_agg.empty:
+            jugadores_extra.append(row_opt_agg.iloc[0])
+
+    # Para compatibilidad si quisieras referenciar luego:
+    jugador_3 = jugadores_extra[0] if len(jugadores_extra) >= 1 else None
+    jugador_4 = jugadores_extra[1] if len(jugadores_extra) >= 2 else None
+
     # Dejar lista la base procesada para pasos siguientes
-    df_agg = df_muestra_proc.copy()
+    df_agg = df_players_proc.copy()
 
     # -------------------- BLOQUE 5B: Ficha técnica de los jugadores seleccionados --------------------
     st.markdown("---")
@@ -897,7 +1028,7 @@ if st.session_state['1v1_step'] == 3:
         """,
         unsafe_allow_html=True,
     )
-    col1, col2 = st.columns(2)
+    # columnas dinámicas se definen más abajo según el número de jugadores
 
     # Función para mostrar la ficha técnica de un jugador (tarjeta moderna)
     def mostrar_ficha(jugador):
@@ -918,7 +1049,7 @@ if st.session_state['1v1_step'] == 3:
         equipo_full = jugador.get("Equipo_data_full")
         if not equipo_full:
             equipo_full = (str(jugador.get("Equipo_data", "")).strip() + (" " + str(jugador.get("Pais_diminutivo", "")).strip() if pd.notnull(jugador.get("Pais_diminutivo", None)) else "")).strip() or "N/D"
-        nombre = jugador.get("ID_Display") or jugador.get("Nombre_transfermarket") or "Jugador"
+        nombre = jugador.get("Nombre_transfermarket") or "Jugador"
         nombre = _sanitize_text(nombre)
         temporada = _sanitize_text(jugador.get("Temporada", "N/D"))
         pos_gen = _sanitize_text(jugador.get("Posicion_general", "N/D"))
@@ -969,10 +1100,41 @@ if st.session_state['1v1_step'] == 3:
         """
         st.markdown(html, unsafe_allow_html=True)
 
-    with col1:
-        mostrar_ficha(jugador_1)
-    with col2: 
-        mostrar_ficha(jugador_2)
+    # --- Render dinámico de hasta 4 fichas ---
+    fichas = [jugador_1, jugador_2] + [j for j in jugadores_extra if j is not None]
+    n_fichas = len(fichas)
+
+    if n_fichas == 1:
+        c = st.columns(1)
+        with c[0]:
+            mostrar_ficha(fichas[0])
+    elif n_fichas == 2:
+        c1, c2 = st.columns(2)
+        with c1:
+            mostrar_ficha(fichas[0])
+        with c2:
+            mostrar_ficha(fichas[1])
+    elif n_fichas == 3:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            mostrar_ficha(fichas[0])
+        with c2:
+            mostrar_ficha(fichas[1])
+        with c3:
+            mostrar_ficha(fichas[2])
+    else:
+        # 4 o más (limitamos a 4)
+        fichas = fichas[:4]
+        r1c1, r1c2 = st.columns(2)
+        with r1c1:
+            mostrar_ficha(fichas[0])
+        with r1c2:
+            mostrar_ficha(fichas[1])
+        r2c1, r2c2 = st.columns(2)
+        with r2c1:
+            mostrar_ficha(fichas[2])
+        with r2c2:
+            mostrar_ficha(fichas[3])
 
     # -------------------- BLOQUE 6: COMPARATIVA - ELECCIÓN DE MUESTRA --------------------
     # Usar SIEMPRE la muestra filtrada del sidebar
@@ -1172,11 +1334,13 @@ if st.session_state['1v1_step'] == 3:
     # Usaremos la misma preparación de métricas, pero aplicada a la muestra del sidebar (excluye a los dos jugadores)
     df_comparacion, _, _, _, metricas_invertir_ctx = aplicar_metricas_personalizadas(df_muestra.copy(), df_metricas)
 
-    # Definir el título y subtítulo del gráfico de radar
-    titulo_grafico = (
-        f"{jugador_1['Nombre_transfermarket']} {jugador_1['Temporada']} ({jugador_1['Equipo_data']}) "
-        f"vs {jugador_2['Nombre_transfermarket']} {jugador_2['Temporada']} ({jugador_2['Equipo_data']})"
-    )
+    # Lista dinámica de jugadores seleccionados para los radares (hasta 4)
+    players_sel = [jugador_1, jugador_2] + [j for j in jugadores_extra if j is not None]
+    labels_sel = [f"{p['Nombre_transfermarket']} - {p['Equipo_data']} - {p['Temporada']}" for p in players_sel]
+
+    # Definir el título del gráfico de radar de forma dinámica
+    partes_titulo = [f"{p['Nombre_transfermarket']} {p['Temporada']} ({p['Equipo_data']})" for p in players_sel]
+    titulo_grafico = " vs ".join(partes_titulo) if len(partes_titulo) <= 2 else " | ".join(partes_titulo)
 
     # Posiciones de la muestra para el subtítulo (si existen)
     posiciones_muestra = (
@@ -1206,17 +1370,35 @@ if st.session_state['1v1_step'] == 3:
     # Limitar el número de métricas seleccionadas para los gráficos radar
     max_metricas = 12
     if len(seleccionadas) > max_metricas:
-        seleccionadas = seleccionadas[:max_metricas]  # Mantener primeras métricas seleccionadas
-    # Ordenar métricas seleccionadas por bloque y luego alfabéticamente
-    bloques_orden = [
-        metricas_portero, metricas_fisicas, metricas_centros,
-        metricas_construccion_general, metricas_construccion_ofensiva,
-        metricas_ofensivas, metricas_balon_parado
-    ]
+        seleccionadas = seleccionadas[:max_metricas]
+
+    # --- Ordenar métricas por bloques (bloque con más seleccionadas primero) y A→Z dentro de cada bloque ---
+    # "bloques_metricas_wizard" mantiene el orden de creación; lo usamos como desempate estable
+    _bloque_idx = {bn: i for i, bn in enumerate(bloques_metricas_wizard.keys())}
+
+    bloques_para_orden = []
+    for nombre_bloque, mets_bloque in bloques_metricas_wizard.items():
+        en_bloque = [m for m in seleccionadas if m in mets_bloque]
+        if en_bloque:
+            en_bloque = sorted(en_bloque, key=_sort_key_az)
+            bloques_para_orden.append((nombre_bloque, en_bloque))
+
+    # Métricas que no quedaron clasificadas en ningún bloque (por seguridad)
+    resto = [m for m in seleccionadas if not any(m in lst for _, lst in bloques_para_orden)]
+    if resto:
+        bloques_para_orden.append(("Otros", sorted(resto, key=_sort_key_az)))
+
+    # Ordenar bloques por cantidad (desc) y, en caso de empate, por su orden de creación
+    bloques_para_orden.sort(key=lambda x: (-len(x[1]), _bloque_idx.get(x[0], 999)))
+
+    # Aplanar respetando el orden de bloques y A→Z interno
     seleccionadas_radar = []
-    for bloque in bloques_orden:
-        seleccionadas_en_bloque = sorted([m for m in seleccionadas if m in bloque])
-        seleccionadas_radar.extend(seleccionadas_en_bloque)
+    for _, lista_mets in bloques_para_orden:
+        seleccionadas_radar.extend(lista_mets)
+
+    # Aplicar tope final
+    if len(seleccionadas_radar) > max_metricas:
+        seleccionadas_radar = seleccionadas_radar[:max_metricas]
     st.info(f"🔢 Máximo de métricas permitidas : {max_metricas}")
     # Calcular percentiles contexto
     percentiles_contexto = {}
@@ -1239,260 +1421,114 @@ if st.session_state['1v1_step'] == 3:
     })
     # Forzar el modo según el tema actual
     modo_claro = (get_theme_type() == "light")
-    # -------------------- BLOQUE 9: Mini-gráficos de dispersión horizontales --------------------
-    st.markdown("---")
-    st.markdown("### Posición de cada jugador en la distribución de la muestra")
-    st.caption("Cada franja muestra la distribución de la muestra (puntos grises). Solo se resaltan los dos jugadores seleccionados con su valor y percentil.")
-
-    # Paleta dependiente del tema + colores de jugadores
-    _theme = st.get_option("theme.base")
-    _light_mode = (_theme != "dark")
-    color_others = "rgba(120,120,120,0.35)" if _light_mode else "rgba(220,220,220,0.25)"
-        # Colores: usar "Color primario" si existe, con fallback elegantes
-    _c1 = _clean_hex_color(jugador_1.get("Color primario", None))
-    _c2 = _clean_hex_color(jugador_2.get("Color primario", None))
-    color_j1 = _c1 or "#e91e63"       # rosa
-    color_j2 = _c2 or "#1e88e5"       # azul
-
-    # Pequeña leyenda compacta
-    _j1_lab = f"{_sanitize_text(jugador_1.get('Nombre_transfermarket', jugador_1.get('ID_Display', 'J1')))} - { _sanitize_text(jugador_1.get('Temporada','')) }"
-    _j2_lab = f"{_sanitize_text(jugador_2.get('Nombre_transfermarket', jugador_2.get('ID_Display', 'J2')))} - { _sanitize_text(jugador_2.get('Temporada','')) }"
-    st.markdown(
-        f"""\n
-        <div style="display:flex;gap:22px;align-items:center;margin-top:-6px;margin-bottom:6px;">
-          <span style="display:inline-flex;align-items:center;gap:8px;">
-            <span style="width:12px;height:12px;border-radius:50%;background:{color_j1};display:inline-block;border:1px solid rgba(0,0,0,.25)"></span>
-            <b>{_j1_lab}</b>
-          </span>
-          <span style="display:inline-flex;align-items:center;gap:8px;">
-            <span style="width:12px;height:12px;border-radius:50%;background:{color_j2};display:inline-block;border:1px solid rgba(0,0,0,.25)"></span>
-            <b>{_j2_lab}</b>
-          </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    fig = crear_radar_percentil_plotly(
+        players_sel,
+        labels_sel,
+        seleccionadas_radar,
+        df_comparacion,
+        titulo=titulo_grafico,
+        subtitulo=None,
+        modo_claro=modo_claro
     )
+    # Aplicar paleta contrastada y reducir tamaño de título
+    _apply_palette_and_title(fig, PLAYER_PALETTE, title_size=16)
+    col1 = st.columns(1)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key="radar_chart", theme=None) 
+    # Información de la muestra centrada bajo la gráfica
+    def _center_caption(md_text: str) -> str:
+        html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', md_text)
+        html = html.replace("\n", "<br>")
+        return f"<div style='text-align:center; font-size:0.9rem; opacity:0.85'>{html}</div>"
 
-    def _dispersion_strip(fig_x, vals, text_others, x1, x2, label, p1_txt, p2_txt, x_min=None, x_max=None):
-        """Crea una 'tira' de dispersión con jitter vertical y etiquetas separadas
-        para los dos jugadores seleccionados.
-        - vals: lista de valores x de la muestra
-        - text_others: lista de textos para hover de cada punto de la muestra
-        - x1/x2: valores de los jugadores 1 y 2
-        - p1_txt/p2_txt: etiquetas con valor (y percentil) para mostrar
-        - x_min/x_max: rango opcional del eje x
-        """
-        fig = go.Figure()
-        # --- Jitter vertical suave y reproducible por métrica ---
-        rng = np.random.default_rng(abs(hash(fig_x)) % (2**32))
-        jitter = np.clip(rng.normal(0, 0.08, len(vals)), -0.25, 0.25)
-        # Puntos de la muestra
-        fig.add_trace(go.Scatter(
-            x=vals, y=jitter.tolist(),
-            mode="markers",
-            marker=dict(size=6, color=color_others),
-            text=text_others,
-            hovertemplate="%{text}<extra></extra>",
-            showlegend=False,
-        ))
-        # --- Posición de etiquetas para minimizar choque ---
-        if x_min is None:
-            x_min = min(vals + [x1, x2])
-        if x_max is None:
-            x_max = max(vals + [x1, x2])
-        span = max(1e-9, (x_max - x_min))
-        close = abs(x1 - x2) < 0.03 * span
-        if x1 <= x2:
-            pos1 = "top left" if not close else "top center"
-            pos2 = "bottom right" if not close else "bottom center"
-        else:
-            pos1 = "bottom left" if not close else "top center"
-            pos2 = "top right" if not close else "bottom center"
-        # Para separar aún más, colocamos J1 arriba y J2 abajo
-        y_top = 0.33
-        y_bottom = -0.33
-        # Jugador 1
-        h1 = (
-            f"{_sanitize_text(jugador_1.get('Nombre_transfermarket', jugador_1.get('ID_Display','Jugador 1')))}<br>"
-            f"{_sanitize_text(jugador_1.get('Equipo_data_full', jugador_1.get('Equipo_data','')))}<br>"
-            f"{_sanitize_text(label)}: { _sanitize_text(formatear_valor(label, x1)) }"
-        )
-        fig.add_trace(go.Scatter(
-            x=[x1], y=[y_top],
-            mode="markers+text",
-            cliponaxis=False,
-            marker=dict(size=11, color=color_j1, line=dict(width=1, color="white" if not _light_mode else "black")),
-            text=[p1_txt], textposition=pos1, textfont=dict(size=11),
-            hovertemplate=h1 + "<extra></extra>",
-            showlegend=False,
-        ))
-        # Jugador 2
-        h2 = (
-            f"{_sanitize_text(jugador_2.get('Nombre_transfermarket', jugador_2.get('ID_Display','Jugador 2')))}<br>"
-            f"{_sanitize_text(jugador_2.get('Equipo_data_full', jugador_2.get('Equipo_data','')))}<br>"
-            f"{_sanitize_text(label)}: { _sanitize_text(formatear_valor(label, x2)) }"
-        )
-        fig.add_trace(go.Scatter(
-            x=[x2], y=[y_bottom],
-            mode="markers+text",
-            cliponaxis=False,
-            marker=dict(size=11, color=color_j2, line=dict(width=1, color="white" if not _light_mode else "black")),
-            text=[p2_txt], textposition=pos2, textfont=dict(size=11),
-            hovertemplate=h2 + "<extra></extra>",
-            showlegend=False,
-        ))
-        # layout compacto
-        fig.update_layout(
-            height=200,
-            margin=dict(l=60, r=20, t=64, b=56),
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-            xaxis=dict(
-                showline=True, linewidth=1, linecolor=ejes_color,
-                gridcolor="rgba(127,127,127,0.2)", zeroline=False, title=None,
-                range=[x_min - 0.02*span, x_max + 0.02*span],
-            ),
-            yaxis=dict(visible=False, range=[-0.8, 0.8]),
-            title=dict(text=f"<b>{_sanitize_text(fig_x)}</b>", x=0.01, xanchor="left", y=0.98,
-                       font=dict(size=13, color=font_color)),
-        )
-        return fig
+    st.markdown(_center_caption(info_md), unsafe_allow_html=True)
+    col2 = st.columns(1)
 
-    # Construir una cuadricula (2 columnas) con tiras por métrica
-    cols = st.columns(2)
-    for i, metrica in enumerate(seleccionadas_radar):
-        # Serie de la muestra (limpia)
-        if metrica not in df_comparacion.columns:
-            continue
-        serie = pd.to_numeric(df_comparacion[metrica], errors="coerce").dropna()
-        if serie.empty:
-            continue
-        # valores de los jugadores
-        x1 = pd.to_numeric(pd.Series([jugador_1.get(metrica)]), errors="coerce").iloc[0]
-        x2 = pd.to_numeric(pd.Series([jugador_2.get(metrica)]), errors="coerce").iloc[0]
-        if pd.isna(x1) or pd.isna(x2):
-            continue
 
-        # percentiles (0-100) y formato de valores
+    # --- Tabla moderna (dinámica): Métrica a la izquierda y hasta 4 jugadores a la derecha ---
+
+    # Preparar lista dinámica de jugadores (hasta 4)
+    players_dyn = [jugador_1, jugador_2] + [j for j in jugadores_extra if j is not None]
+    labels_dyn = [f"{p['Nombre_transfermarket']} - {p['Temporada']}" for p in players_dyn]
+
+    # Función local robusta para percentil (evita depender de obtener_percentiles)
+    def _percentil_val_vs_muestra(value, serie, invert=False) -> float | None:
         try:
-            p1 = int(round(obtener_percentiles(jugador_1, df_comparacion, [metrica], metricas_invertir_ctx)[0]))
+            v = float(value)
         except Exception:
-            p1 = None
-        try:
-            p2 = int(round(obtener_percentiles(jugador_2, df_comparacion, [metrica], metricas_invertir_ctx)[0]))
-        except Exception:
-            p2 = None
-        v1_txt = formatear_valor(metrica, x1)
-        v2_txt = formatear_valor(metrica, x2)
-        p1_txt = f"{v1_txt} ({p1}%)" if p1 is not None else v1_txt
-        p2_txt = f"{v2_txt} ({p2}%)" if p2 is not None else v2_txt
+            return None
+        ser = pd.to_numeric(serie, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if ser.empty or pd.isna(v):
+            return None
+        pct = float((ser <= v).mean()) * 100.0
+        if invert:
+            pct = 100.0 - pct
+        return float(np.clip(pct, 0, 100))
 
-        # Build hover text for each point de la muestra
-        subset = df_comparacion.loc[serie.index]
-
-        # Preferir Nombre_transfermarket; si no, caer a ID_Display; si tampoco, 'Jugador'
-        if "Nombre_transfermarket" in subset.columns and subset["Nombre_transfermarket"].notna().any():
-            nombres = subset["Nombre_transfermarket"].fillna(subset.get("ID_Display"))
-        elif "ID_Display" in subset.columns:
-            nombres = subset["ID_Display"]
+    # Determinar ganadores por métrica (considerando métricas invertidas)
+    def _winners_for_metric(metric_name: str, players: list[pd.Series]) -> set[int]:
+        vals = []
+        inv = isinstance(metricas_invertir_ctx, (set, list, dict)) and (metric_name in metricas_invertir_ctx)
+        for p in players:
+            try:
+                vals.append(float(p.get(metric_name, np.nan)))
+            except Exception:
+                vals.append(np.nan)
+        arr = np.array(vals, dtype=float)
+        if np.all(np.isnan(arr)):
+            return set()
+        if inv:
+            best = np.nanmin(arr)
+            idxs = np.where(np.isclose(arr, best, equal_nan=False))[0]
         else:
-            nombres = pd.Series(["Jugador"] * len(subset), index=subset.index)
-        nombres = nombres.fillna("Jugador").astype(str)
+            best = np.nanmax(arr)
+            idxs = np.where(np.isclose(arr, best, equal_nan=False))[0]
+        return set(map(int, idxs.tolist()))
 
-        # Preferir Equipo_data_full; si no, caer a Equipo_data; si tampoco, cadena vacía
-        if "Equipo_data_full" in subset.columns and subset["Equipo_data_full"].notna().any():
-            equipos = subset["Equipo_data_full"]
-        elif "Equipo_data" in subset.columns:
-            equipos = subset["Equipo_data"]
-        else:
-            equipos = pd.Series([""] * len(subset), index=subset.index)
-        equipos = equipos.fillna("").astype(str)
-
-        text_others = [
-            f"{_sanitize_text(n)}<br>{_sanitize_text(e)}<br>{_sanitize_text(metrica)}: {_sanitize_text(formatear_valor(metrica, float(v)))}"
-            for n, e, v in zip(nombres, equipos, serie)
-        ]
-        # Rango x para evitar recortes
-        x_min, x_max = float(serie.min()), float(serie.max())
-        fig_strip = _dispersion_strip(metrica, serie.tolist(), text_others, float(x1), float(x2), metrica, p1_txt, p2_txt, x_min=x_min, x_max=x_max)
-        with cols[i % 2]:
-            st.plotly_chart(fig_strip, use_container_width=True, config={"displayModeBar": False}, theme=None)
-
-    # Información de la muestra debajo de las gráficas (igual que en scatter)
-    st.caption(info_md)
-
-
-# Nombres de columnas
-    nombre_1 = f"{jugador_1['Nombre_transfermarket']} - {jugador_1['Temporada']}"
-    nombre_2 = f"{jugador_2['Nombre_transfermarket']} - {jugador_2['Temporada']}"
-    col_perc_1 = "Percentil 1"
-    col_perc_2 = "Percentil 2"
-
-    # Datos
-    datos_tabla = []
+    # Construir filas
+    rows_cmp = []
     for metrica in seleccionadas_radar:
-        val_1 = jugador_1[metrica]
-        val_fmt_1 = formatear_valor(metrica, val_1)
-        perc_1 = min(max(obtener_percentiles(jugador_1, df_comparacion, [metrica], metricas_invertir_ctx)[0], 0), 100)
+        # Serie de muestra para percentiles
+        serie_ctx = df_comparacion.get(metrica, pd.Series(dtype=float))
+        invert_flag = isinstance(metricas_invertir_ctx, (set, list, dict)) and (metrica in metricas_invertir_ctx)
+        wins = _winners_for_metric(metrica, players_dyn)
 
-        val_2 = jugador_2[metrica]
-        val_fmt_2 = formatear_valor(metrica, val_2)
-        perc_2 = min(max(obtener_percentiles(jugador_2, df_comparacion, [metrica], metricas_invertir_ctx)[0], 0), 100)
+        # Celdas por jugador
+        jug_cells = []
+        for idx, p in enumerate(players_dyn):
+            val = p.get(metrica, None)
+            val_fmt = formatear_valor(metrica, val)
+            pct = _percentil_val_vs_muestra(val, serie_ctx, invert=invert_flag)
+            jug_cells.append({"val_fmt": val_fmt, "pct": pct, "win": (idx in wins)})
+        rows_cmp.append((metrica, jug_cells))
 
-        datos_tabla.append({
-            "Métrica": metrica,
-            nombre_1: val_fmt_1,
-            col_perc_1: perc_1,
-            nombre_2: val_fmt_2,
-            col_perc_2: perc_2
-        })
+    # CSS dinámico (ancho por jugador)
+    num_players = max(2, min(4, len(players_dyn)))
+    metric_col_w = 30  # %
+    rest = 100 - metric_col_w
+    subcol_w = rest / (2 * num_players)
 
-    # Respetar el orden de `seleccionadas_radar` (por bloques y A→Z)
-    df_tabla = pd.DataFrame(datos_tabla)
-
-    # --- Tabla moderna (alternativa a AgGrid): valores y percentiles por métrica (comparativa)
-    st.markdown("#### Tabla moderna: valores y percentiles por métrica (comparativa)")
-
-    # CSS (ligero, funciona en claro/oscuro)
-    tbl_css_cmp = """
+    tbl_css_dyn = f"""
     <style>
-    .table-modern{width:100%;border-collapse:separate;border-spacing:0 8px;table-layout:fixed}
-    .table-modern th{font-size:.85rem;text-align:center;opacity:.85;padding:6px 10px}
-    .table-modern td{background:rgba(0,0,0,.03);padding:10px;border:1px solid rgba(0,0,0,.06)}
-    .table-modern td:first-child{border-top-left-radius:10px;border-bottom-left-radius:10px}
-    .table-modern td:last-child{border-top-right-radius:10px;border-bottom-right-radius:10px}
-    .badge-metric{font-weight:600}
-    .td-center{text-align:center}
-    .metric-center{text-align:center;font-weight:600}
+    .table-modern{{width:100%;border-collapse:separate;border-spacing:0 8px;table-layout:fixed}}
+    .table-modern th{{font-size:.85rem;text-align:center;opacity:.85;padding:6px 10px}}
+    .table-modern td{{background:rgba(0,0,0,.03);padding:10px;border:1px solid rgba(0,0,0,.06)}}
+    .table-modern td:first-child{{border-top-left-radius:10px;border-bottom-left-radius:10px}}
+    .table-modern td:last-child{{border-top-right-radius:10px;border-bottom-right-radius:10px}}
+    .metric-left{{font-weight:600}}
+    .pbar-wrap{{display:flex;align-items:center;gap:10px}}
+    .pbar{{flex:1;height:10px;border-radius:999px;background:rgba(0,0,0,.08);overflow:hidden}}
+    .pbar>span{{display:block;height:100%;border-radius:inherit}}
+    .pct-label{{width:42px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700}}
+    .winicon{{margin-left:6px}}
+    @media (prefers-color-scheme: dark){{
+      .table-modern td{{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.08)}}
+      .pbar{{background:rgba(255,255,255,.12)}}
+    }}
+    /* colgroup dinámico */
+    .table-modern col.c0{{width:{metric_col_w}%}}
+    """ + "".join([f".table-modern col.c{i+1}{{width:{subcol_w:.4f}%}}\n" for i in range(2*num_players)]) + "</style>"
 
-    /* Progress bars */
-    .pbar-wrap{display:flex;align-items:center;gap:10px}
-    .pbar-wrap-rtl{display:flex;align-items:center;gap:10px}
-    .pbar{flex:1;height:10px;border-radius:999px;background:rgba(0,0,0,.08);overflow:hidden}
-    .pbar-rtl{transform:scaleX(-1);transform-origin:center}
-    .pbar>span{display:block;height:100%;border-radius:inherit}
-    .pct-label{width:42px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
-    .pct-label-left{width:42px;text-align:left;font-variant-numeric:tabular-nums;font-weight:700}
-
-    /* Grouped headers */
-    .th-group{font-weight:700}
-    .th-metric{font-weight:700}
-    .th-sub{font-weight:600;opacity:.8}
-
-    /* Fixed column widths */
-    .table-modern col.c1{width:10%}
-    .table-modern col.c2{width:24%}
-    .table-modern col.c3{width:32%}
-    .table-modern col.c4{width:24%}
-    .table-modern col.c5{width:10%}
-
-    @media (prefers-color-scheme: dark){
-      .table-modern td{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.08)}
-      .pbar{background:rgba(255,255,255,.12)}
-    }
-    </style>
-    """
-
-    def _bar_html_from_pct(pct):
+    def _bar_html(pct):
         if pct is None:
             return "<div class='pbar'><span style='width:0%'></span></div>", "N/D"
         try:
@@ -1501,106 +1537,33 @@ if st.session_state['1v1_step'] == 3:
             p = 0.0
         p = max(0.0, min(100.0, p))
         hue = int(round((p/100.0)*120))  # 0=rojo, 120=verde
-        bar = f"<div class='pbar'><span style='width:{p}%;background:hsl({hue},70%,45%);'></span></div>"
-        lab = f"{int(round(p))}%"
-        return bar, lab
+        return f"<div class='pbar'><span style='width:{p}%;background:hsl({hue},70%,45%);'></span></div>", f"{int(round(p))}%"
 
-    def _bar_html_from_pct_rtl(pct):
-        if pct is None:
-            return "<div class='pbar pbar-rtl'><span style='width:0%'></span></div>", "N/D"
-        try:
-            p = float(pct)
-        except Exception:
-            p = 0.0
-        p = max(0.0, min(100.0, p))
-        hue = int(round((p/100.0)*120))  # 0=rojo, 120=verde
-        bar = f"<div class='pbar pbar-rtl'><span style='width:{p}%;background:hsl({hue},70%,45%);'></span></div>"
-        lab = f"{int(round(p))}%"
-        return bar, lab
+    # Encabezado (agrupado por jugador)
+    colgroup_html = "<colgroup><col class='c0'>" + "".join([f"<col class='c{i+1}'>" for i in range(2*num_players)]) + "</colgroup>"
 
-    rows_html_cmp = []
-    for r in df_tabla.to_dict(orient="records"):
-        met = _sanitize_text(r.get("Métrica", ""))
-        v1_fmt = _sanitize_text(r.get(nombre_1, ""))
-        v2_fmt = _sanitize_text(r.get(nombre_2, ""))
-        p1    = r.get(col_perc_1, None)
-        p2    = r.get(col_perc_2, None)
+    header_html = "<thead><tr><th rowspan='2'>Métrica</th>"
+    for label in labels_dyn:
+        header_html += f"<th colspan='2'>{_sanitize_text(label)}</th>"
+    header_html += "</tr><tr>"
+    for _ in labels_dyn:
+        header_html += "<th>Percentil</th><th>Valor</th>"
+    header_html += "</tr></thead>"
 
-        bar1_rtl, lab1 = _bar_html_from_pct_rtl(p1 if (p1 is not None and pd.notna(p1)) else None)
-        bar2,     lab2 = _bar_html_from_pct(p2 if (p2 is not None and pd.notna(p2)) else None)
+    # Filas
+    body_html = []
+    for metrica, cells in rows_cmp:
+        row = [f"<td class='metric-left'>{_sanitize_text(metrica)}</td>"]
+        for c in cells:
+            bar, lab = _bar_html(c["pct"])
+            win = " 🔼" if c["win"] else ""
+            row.append(f"<td><div class='pbar-wrap'>{bar}<div class='pct-label'>{lab}</div></div></td>")
+            row.append(f"<td style='text-align:center'>{_sanitize_text(c['val_fmt'])}<span class='winicon'>{win}</span></td>")
+        body_html.append("<tr>" + "".join(row) + "</tr>")
 
-        # Determinar ganador según el valor real (considerando métricas invertidas)
-        try:
-            v1_num = float(jugador_1.get(met, np.nan))
-        except Exception:
-            v1_num = np.nan
-        try:
-            v2_num = float(jugador_2.get(met, np.nan))
-        except Exception:
-            v2_num = np.nan
-
-        lower_better = isinstance(metricas_invertir_ctx, (set, list, dict)) and (met in metricas_invertir_ctx)
-        winner = None
-        if not np.isnan(v1_num) and not np.isnan(v2_num):
-            if lower_better:
-                if v1_num < v2_num: winner = 1
-                elif v2_num < v1_num: winner = 2
-            else:
-                if v1_num > v2_num: winner = 1
-                elif v2_num > v1_num: winner = 2
-
-        win1 = "<span class='win'> 🔼</span>" if winner == 1 else ""
-        win2 = "<span class='win'> 🔼</span>" if winner == 2 else ""
-
-        rows_html_cmp.append(
-            "<tr>"
-            # 1) Valor Jugador 1 (centrado)
-            f"<td class='td-center'>{v1_fmt}{win1}</td>"
-            # 2) Percentil Jugador 1 (label a la izquierda, barra de der→izq)
-            f"<td><div class='pbar-wrap-rtl'><div class='pct-label-left'>{lab1}</div>{bar1_rtl}</div></td>"
-            # 3) Métrica (centrada)
-            f"<td class='metric-center'>{met}</td>"
-            # 4) Percentil Jugador 2 (tal cual estaba: barra + label a la derecha)
-            f"<td><div class='pbar-wrap'>{bar2}<div class='pct-label'>{lab2}</div></div></td>"
-            # 5) Valor Jugador 2 (tal cual + icono)
-            f"<td>{v2_fmt}{win2}</td>"
-            "</tr>"
-        )
-
-    colgroup_html = (
-        "<colgroup>"
-        "<col class='c1'>"
-        "<col class='c2'>"
-        "<col class='c3'>"
-        "<col class='c4'>"
-        "<col class='c5'>"
-        "</colgroup>"
-    )
-
-    header_html = (
-        "<thead>"
-        "<tr>"
-        f"<th colspan='2' class='th-group'>{_sanitize_text(nombre_1)}</th>"
-        "<th rowspan='2' class='th-metric'>Métrica</th>"
-        f"<th colspan='2' class='th-group'>{_sanitize_text(nombre_2)}</th>"
-        "</tr>"
-        "<tr>"
-        "<th class='th-sub'>Valor</th>"
-        "<th class='th-sub'>Percentil</th>"
-        "<th class='th-sub'>Percentil</th>"
-        "<th class='th-sub'>Valor</th>"
-        "</tr>"
-        "</thead>"
-    )
-
-    tabla_cmp_html = (
-        tbl_css_cmp +
-        "<table class='table-modern'>" +
-        colgroup_html +
-        header_html +
-        "<tbody>" + "".join(rows_html_cmp) + "</tbody></table>"
-    )
-    st.markdown(tabla_cmp_html, unsafe_allow_html=True)
+    tabla_dyn_html = tbl_css_dyn + "<table class='table-modern'>" + colgroup_html + header_html + "<tbody>" + "".join(body_html) + "</tbody></table>"
+    st.markdown("#### Tabla moderna: valores y percentiles por métrica (comparativa)")
+    st.markdown(tabla_dyn_html, unsafe_allow_html=True)
 
     # Aclaración breve sobre percentiles
     st.markdown(
@@ -1610,3 +1573,103 @@ if st.session_state['1v1_step'] == 3:
         jugadores de la muestra en esa métrica (solo ~1% lo supera). Un **percentil 50** es la mediana.
         """
     )
+
+
+# ========================================================================
+# -------------------- BLOQUE 8: Radares comparativos por bloque (3x2) --------------------
+# ========================================================================
+
+    st.markdown("---")
+    st.markdown("### Radares comparativos por bloque")
+
+    # Helper: elegir métricas del universo del bloque (no sólo seleccionadas)
+    # - Respeta el modo (Por 90' / Totales) usando considerar_dict
+    # - Prioriza métricas sugeridas por posición detallada del Jugador 1
+    # - Limita a un máximo razonable por radar para legibilidad
+
+    def _elegir_metricas_bloque(univ_bloque: list[str], considerar_dict: dict, modo_90: bool,
+                                df_cmp: pd.DataFrame, pos_det_ref: str, max_mets: int = 12) -> list[str]:
+        if not univ_bloque:
+            return []
+        tipos_validos = ["/90", "Porcentaje"] if modo_90 else ["Totales", "Porcentaje"]
+        # Filtrar por tipo válido y existencia en df
+        candidatas = [m for m in univ_bloque if (m in considerar_dict) and (considerar_dict[m] in tipos_validos) and (m in df_cmp.columns)]
+        if not candidatas:
+            return []
+        # Prioridad: métricas default por posición detallada
+        try:
+            defaults_pos = metricas_default_por_posicion.get(pos_det_ref, [])
+        except Exception:
+            defaults_pos = []
+        pri = [m for m in candidatas if m in defaults_pos]
+        resto = sorted([m for m in candidatas if m not in defaults_pos], key=_sort_key_az)
+        orden = pri + resto
+        if len(orden) > max_mets:
+            orden = orden[:max_mets]
+        # Asegurar al menos 3 para que el radar sea informativo
+        return orden if len(orden) >= 3 else []
+
+    # Definir bloques por tipo de jugador
+    pos_det_j1 = jugador_1.get("Posicion_detallada", "")
+    diminutivo_pos_det = diminutivos_pos.get(pos_det_j1, pos_det_j1)
+
+    if diminutivo_pos_det == "PT":
+        bloques = [
+            ("Portero",                 metricas_portero),
+            ("Físicas",                 metricas_fisicas),
+            ("Construcción (general)",  metricas_construccion_general),
+        ]
+    else:
+        bloques = [
+            ("Físicas",                  metricas_fisicas),
+            ("Construcción (general)",   metricas_construccion_general),
+            ("Construcción (ofensiva)",  metricas_construccion_ofensiva),
+            ("Centros",                  metricas_centros),
+            ("Ofensivas",                metricas_ofensivas),
+            ("Balón parado",             metricas_balon_parado),
+        ]
+
+    # Preparar lista final de (nombre_bloque, métricas)
+    valid_blocks: list[tuple[str, list[str]]] = []
+    for nb, lst in bloques:
+        mets = _elegir_metricas_bloque(lst, considerar_dict, modo_90, df_comparacion, pos_det_j1, max_mets=12)
+        if mets:
+            valid_blocks.append((nb, mets))
+
+    if not valid_blocks:
+        st.info("No hay bloques con métricas suficientes para el modo actual.")
+    else:
+        # Reutilizar players_sel y labels_sel para todos los radares de bloque
+        modo_claro = (get_theme_type() == "light")
+
+        # Render en grilla: 3 filas x 2 columnas (hasta 6 bloques)
+        # Se imprimen en pares; si hay menos de 6, se llenan en orden
+        for i in range(0, min(len(valid_blocks), 6), 2):
+            c1, c2 = st.columns(2, gap="large")
+            nb1, mets1 = valid_blocks[i]
+            with c1:
+                fig_b1 = crear_radar_percentil_plotly(
+                    players_sel,
+                    labels_sel,
+                    mets1,
+                    df_comparacion,
+                    titulo=f"{nb1}",
+                    subtitulo=None,
+                    modo_claro=modo_claro,
+                )
+                _apply_palette_and_title(fig_b1, PLAYER_PALETTE, title_size=15)
+                st.plotly_chart(fig_b1, use_container_width=True, config={"displayModeBar": False}, theme=None)
+            if i + 1 < len(valid_blocks):
+                nb2, mets2 = valid_blocks[i+1]
+                with c2:
+                    fig_b2 = crear_radar_percentil_plotly(
+                        players_sel,
+                        labels_sel,
+                        mets2,
+                        df_comparacion,
+                        titulo=f"{nb2}",
+                        subtitulo=None,
+                        modo_claro=modo_claro,
+                    )
+                    _apply_palette_and_title(fig_b2, PLAYER_PALETTE, title_size=15)
+                    st.plotly_chart(fig_b2, use_container_width=True, config={"displayModeBar": False}, theme=None)

@@ -36,6 +36,7 @@ pages = {
         st.Page("pages/1_Comparativa_general.py", title="📊 Comparativa general"),
         st.Page("pages/1_Comparativa_con_logos.py", title="🛡️ Comparativa con logos"),
         st.Page("pages/1_Comparativa_personalizada.py", title="📈 Comparativa personalizada"),
+        st.Page("pages/1_Comparativa_multiple_radar.py", title="⚔️ Comparativa múltiple"),
     ],
     "1v1": [
         st.Page("pages/2_Comparativa_radar.py", title="⚔️ 1v1 - Radar"),

@@ -212,81 +212,228 @@ else:
 st.sidebar.markdown("## ⚙️ Filtros para la muestra")
 
  # --- Temporada ---
-temporadas_disponibles = sorted(df["Temporada"].dropna().unique(), reverse=True) if "Temporada" in df.columns else []
+# Mostrar temporadas como enteros y filtrar de forma robusta (2025, 2025.0, "2025.0" -> 2025)
+if "Temporada" in df.columns:
+    _temp_series_num = pd.to_numeric(df["Temporada"], errors="coerce").dropna()
+    temporadas_disponibles = sorted(
+        _temp_series_num.round().astype(int).unique().tolist(), reverse=True
+    )
+else:
+    temporadas_disponibles = []
+
 if not temporadas_disponibles:
     st.error("No hay temporadas disponibles en los datos.")
     st.stop()
 
-default_temporada = next((t for t in temporadas_disponibles if "2025" in str(t)), temporadas_disponibles[0])
-# --- PATCH: override temporada desde session_state ---
+# Default a override (si existe) → 2025 → más reciente
 override_temp = st.session_state.get('1v1_sync_temporada')
-if override_temp in temporadas_disponibles:
-    default_temporada = override_temp
+try:
+    override_int = int(round(float(str(override_temp)))) if override_temp is not None else None
+except Exception:
+    override_int = None
+
+if override_int in temporadas_disponibles:
+    default_temporada = override_int
+elif 2025 in temporadas_disponibles:
+    default_temporada = 2025
+else:
+    default_temporada = temporadas_disponibles[0]
+
 idx_temp = temporadas_disponibles.index(default_temporada) if default_temporada in temporadas_disponibles else 0
+
 temporada = st.sidebar.selectbox(
     "Temporada",
     temporadas_disponibles,
     index=idx_temp
 )
-df_temp = df[df["Temporada"] == temporada].copy()
+
+# Igualamos por entero con conversión robusta del DF
+if "Temporada" in df.columns:
+    _temp_col = pd.to_numeric(df["Temporada"], errors="coerce").round().astype("Int64")
+    df_temp = df[_temp_col == int(temporada)].copy()
+else:
+    df_temp = df.copy()
 
 # --- País del equipo ---
 paises_opciones = sorted(df_temp["Pais"].dropna().unique()) if "Pais" in df_temp.columns else []
 default_pais = "Peru" if "Peru" in paises_opciones else (paises_opciones[0] if paises_opciones else None)
-# --- PATCH: override paises desde session_state ---
+# --- PATCH: override paises desde session_state (sanitizado) ---
 override_paises = st.session_state.get('1v1_sync_paises')
+if override_paises is not None and not isinstance(override_paises, (list, tuple, set)):
+    override_paises = [override_paises]
+# Quedarnos solo con los que existen en opciones
+safe_paises_default = [p for p in (override_paises or []) if p in paises_opciones]
+if not safe_paises_default:
+    safe_paises_default = [default_pais] if (default_pais and default_pais in paises_opciones) else paises_opciones
+
 paises_sel = st.sidebar.multiselect(
     'País del equipo',
     paises_opciones,
-    default=(override_paises if override_paises else ([default_pais] if default_pais else []))
+    default=safe_paises_default
 )
 
 # --- Torneo ---
+# Opciones de torneo según países seleccionados en el contexto actual
 if paises_sel:
     torneos_opciones = sorted(
         df_temp.loc[df_temp["Pais"].isin(paises_sel), "Torneo"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .unique()
+        .dropna().astype(str).str.strip().unique()
     )
 else:
     torneos_opciones = sorted(
         df_temp["Torneo"].dropna().astype(str).str.strip().unique()
     )
 
-# --- PATCH: override torneos desde session_state ---
-override_torneos = st.session_state.get('1v1_sync_torneos')
+# Fallback por si no hubiese torneos para los países elegidos:
+if not torneos_opciones:
+    torneos_opciones = sorted(
+        df_temp["Torneo"].dropna().astype(str).str.strip().unique()
+    )
+
+# Clave de contexto (Temporada + Países) para resetear torneos automáticamente
+ctx_tor_hash = f"{int(temporada)}|{'/'.join(sorted(map(str, paises_sel)))}"
+if st.session_state.get("radar_ctx_tor_hash") != ctx_tor_hash:
+    # Al cambiar el contexto, preseleccionamos TODOS los torneos válidos
+    st.session_state["torneos_sel_radar"] = torneos_opciones[:]
+    st.session_state["radar_ctx_tor_hash"] = ctx_tor_hash
+
+# Sanitizar selección previa con respecto a las opciones actuales
+sel_actual = [
+    t for t in st.session_state.get("torneos_sel_radar", []) if t in torneos_opciones
+] or torneos_opciones[:]
+st.session_state["torneos_sel_radar"] = sel_actual
+
+# Crear el widget (sin `default=` para evitar el warning de Streamlit)
 torneos_sel = st.sidebar.multiselect(
-    'Torneo',
+    "Torneo",
     torneos_opciones,
-    default=(override_torneos if override_torneos else torneos_opciones)
+    key="torneos_sel_radar",
 )
+
+# Si el usuario deja vacío el multiselect, lo reponemos con todas las opciones
+if len(torneos_sel) == 0 and len(torneos_opciones) > 0:
+    st.session_state["torneos_sel_radar"] = torneos_opciones[:]
+    st.rerun()
 
 # DF filtrado preliminar (pais/torneo) – hacemos copy para evitar SettingWithCopy
 mask_base = df_temp["Pais"].isin(paises_sel) & df_temp["Torneo"].isin(torneos_sel)
 df_filtros = df_temp[mask_base].copy()
 
+# Auto‑fix: si la combinación actual deja la muestra vacía, cargamos todos los
+# torneos válidos para los países seleccionados (o, si tampoco hubiese, todos).
+if df_filtros.empty:
+    torneos_fallback = sorted(
+        df_temp.loc[df_temp["Pais"].isin(paises_sel), "Torneo"]
+        .dropna().astype(str).str.strip().unique()
+    )
+    if torneos_fallback and set(torneos_sel).isdisjoint(torneos_fallback):
+        st.session_state["torneos_sel_radar"] = torneos_fallback
+        st.rerun()
+    # Fallback global (p. ej. si no hay datos para los países elegidos)
+    torneos_all = sorted(df_temp["Torneo"].dropna().astype(str).str.strip().unique())
+    if torneos_all and set(torneos_sel).isdisjoint(torneos_all):
+        st.session_state["torneos_sel_radar"] = torneos_all
+        st.rerun()
+
 
 # -------------------- FILTROS RESTANTES EN SIDEBAR --------------------
 with st.sidebar:
 
-    if df_filtros.empty:
-        st.warning("No hay datos para los filtros actuales de País/Torneo.")
-        st.stop()
+    # Minutos / M90s / Edad (defaults reactivos = 1/3 del máximo)
+    # Contexto para reseteo automático cuando cambian Temporada/Torneo/País
+    ctx_hash = f"{int(temporada)}|{';'.join(sorted(map(str, torneos_sel)))}|{';'.join(sorted(map(str, paises_sel)))}"
 
-    # Minutos / M90s / Edad
-    min_jugados_max = int(df_filtros["Minutos_jugados"].max()) if "Minutos_jugados" in df_filtros.columns else 0
-    min_jugados = st.slider("Minutos jugados (mínimo)", 0, max(min_jugados_max, 0), min(300, max(min_jugados_max, 0)), step=50)
+    # Máximos actuales en la muestra base (AGREGADOS POR ID)
+    agg_max = (
+        df_filtros.groupby("ID", as_index=False)[["Minutos_jugados", "M90s_jugados"]]
+        .sum()
+    ) if not df_filtros.empty else pd.DataFrame(columns=["Minutos_jugados", "M90s_jugados"])
+    min_jugados_max = int(agg_max["Minutos_jugados"].max()) if not agg_max.empty else 0
+    max_m90         = int(agg_max["M90s_jugados"].max())     if not agg_max.empty else 0
 
-    max_m90 = int(df_filtros["M90s_jugados"].max()) if "M90s_jugados" in df_filtros.columns else 0
-    min_m90s = st.slider("Partidos completos jugados (M90s)", 0, max(max_m90, 0), min(3, max(max_m90, 0)), step=1)
+    # Paso dinámico para minutos (mejor fidelidad del 1/3 según el tamaño de la muestra)
+    if min_jugados_max >= 300:
+        step_minjug = 50
+    elif min_jugados_max >= 120:
+        step_minjug = 20
+    else:
+        step_minjug = 10
+
+    def _third_of(n, step=1, min_nonzero=True):
+        """Devuelve ~1/3 de n ajustado al múltiplo de `step` más cercano.
+        Si queda 0 y hay muestra, opcionalmente asegura al menos `step`."""
+        try:
+            n = int(n)
+        except Exception:
+            return 0
+        if n <= 0:
+            return 0
+        raw = n / 3.0
+        # Redondeo al múltiplo más cercano del paso
+        val = int(round(raw / step)) * step
+        if min_nonzero and val == 0 and n > 0:
+            val = step
+        return min(val, n)
+
+    # —— NUEVO CRITERIO DE DEFAULT ——
+    # En lugar de 1/3 del máximo global, usamos:
+    #   1/3 del “máximo de minutos por país”, pero tomando el país cuyo máximo es más bajo.
+    # Esto evita castigar a torneos/countries con calendarios más cortos.
+    base_for_third = min_jugados_max
+    try:
+        if {"Pais", "ID", "Minutos_jugados"}.issubset(df_temp.columns):
+            scope = df_temp.copy()
+            # Limitar a países y torneos actualmente seleccionados
+            if paises_sel:
+                scope = scope[scope["Pais"].isin(paises_sel)]
+            if torneos_sel:
+                scope = scope[scope["Torneo"].isin(torneos_sel)]
+            # Suma por jugador dentro de cada país
+            mins_per_id = scope.groupby(["Pais", "ID"])["Minutos_jugados"].sum()
+            per_pais_max = mins_per_id.groupby("Pais").max()
+            if not per_pais_max.empty:
+                # Elegimos el país cuyo "máximo de minutos" sea el más bajo
+                base_for_third = int(per_pais_max.min())
+    except Exception:
+        pass
+
+    default_min_jug = _third_of(base_for_third, step=step_minjug)
+
+    # M90s por defecto siempre 0 (pocos lo usarán)
+    default_min_m90 = 0
+
+    # Reseteo cuando cambia el contexto
+    if st.session_state.get("radar_ctx_hash_minmax") != ctx_hash:
+        st.session_state["radar_min_jugados_value"] = default_min_jug
+        st.session_state["radar_min_m90s_value"] = default_min_m90
+        st.session_state["radar_ctx_hash_minmax"] = ctx_hash
+
+    # Preinicializar para evitar warning (no mezclar value= con key)
+    st.session_state.setdefault("radar_min_jugados_value", default_min_jug)
+    st.session_state.setdefault("radar_min_m90s_value", default_min_m90)
+
+    min_jugados = st.slider(
+        "Minutos jugados (mínimo)",
+        0,
+        max(min_jugados_max, 0),
+        step=step_minjug,
+        key="radar_min_jugados_value",
+    )
+
+    min_m90s = st.slider(
+        "Partidos completos jugados (M90s)",
+        0,
+        max(max_m90, 0),
+        step=1,
+        key="radar_min_m90s_value",
+    )
 
     if "Edad" in df_filtros.columns:
         edad_min = int(df_filtros["Edad"].min()); edad_max = int(df_filtros["Edad"].max())
-        edad_range = st.slider("Edad", edad_min, edad_max, (edad_min, edad_max))
+        default_edad_min = max(15, edad_min)
+        edad_range = st.slider("Edad", edad_min, edad_max, (default_edad_min, edad_max))
     else:
-        edad_range = (0, 100)
+        edad_range = (15, 100)
 
     # Posición general (visual: POR/DEF/MED/DEL en ese orden)
     abbr_map = {
@@ -315,24 +462,35 @@ with st.sidebar:
     opciones_vis = [abbr_map[p] for p in posiciones_gen]
     default_vis = [abbr_map[p] for p in default_pos_gen]
 
-    # Sembrar selección deseada en Session State (sin pasar `default` al widget)
-    desired_vis = st.session_state.get("pos_gen_seg_1v1")
-    # Si hay override desde Step 2, forzar ese valor (en abreviatura)
+    # Determinar selección inicial sin tocar session_state (evita conflicto de Streamlit)
+    desired_vis = default_vis
     if override_pos_gen and override_pos_gen in abbr_map:
         desired_vis = [abbr_map[override_pos_gen]]
-    if desired_vis is None:
-        desired_vis = default_vis
-    # Guardamos ANTES de instanciar el widget; no pasamos `default` para evitar la advertencia
-    st.session_state["pos_gen_seg_1v1"] = desired_vis
 
     _seg = getattr(st, "segmented_control", None)
     if callable(_seg):
         try:
-            sel_vis = _seg("Posición general", opciones_vis, selection_mode="multi", key="pos_gen_seg_1v1")
+            sel_vis = _seg(
+                "Posición general",
+                opciones_vis,
+                selection_mode="multi",
+                default=desired_vis,
+                help="Filtra por línea: POR, DEF, MED, DEL (en ese orden)."
+            )
         except Exception:
-            sel_vis = _seg("Posición general", opciones_vis, key="pos_gen_seg_1v1")
+            sel_vis = _seg(
+                "Posición general",
+                opciones_vis,
+                default=desired_vis,
+                help="Filtra por línea: POR, DEF, MED, DEL (en ese orden)."
+            )
     else:
-        sel_vis = st.multiselect("Posición general", opciones_vis, key="pos_gen_seg_1v1")
+        sel_vis = st.multiselect(
+            "Posición general",
+            opciones_vis,
+            default=desired_vis,
+            help="Filtra por línea: POR, DEF, MED, DEL (en ese orden)."
+        )
 
     if isinstance(sel_vis, str):
         sel_vis = [sel_vis]
@@ -375,25 +533,54 @@ with st.sidebar:
             nac2_sel = []
 
 
-# --- Filtro final aplicado sobre df_temp ---
+# --- Filtro final aplicado sobre df_temp (AGREGADO POR ID) ---
 if df_temp.empty:
     st.warning("No hay datos para la temporada seleccionada.")
     st.stop()
 
-df = df_temp[
+# 1) Muestra base por País/Torneo (mantiene filas por torneo)
+pre = df_temp[
     (df_temp["Pais"].isin(paises_sel)) &
-    (df_temp["Torneo"].isin(torneos_sel)) &
-    (df_temp["Minutos_jugados"] >= min_jugados) &
-    (df_temp["M90s_jugados"] >= min_m90s) &
-    (df_temp["Edad"] >= edad_range[0]) & (df_temp["Edad"] <= edad_range[1]) &
-    (df_temp["Posicion_general"].isin(pos_gen_sel)) &
-    (df_temp["Posicion_detallada"].isin(pos_det_sel)) &
-    (
-        df_temp["Nacionalidad"].isin(nac2_sel)
-        if usar_nacionalidad_detallada and "Nacionalidad" in df_temp.columns
-        else df_temp["Nacionalidad_2"].isin(nac2_sel) if "Nacionalidad_2" in df_temp.columns else True
-    )
+    (df_temp["Torneo"].isin(torneos_sel))
 ].copy()
+
+if pre.empty:
+    st.warning("No hay datos para País/Torneo seleccionados.")
+    st.stop()
+
+# 2) Agregado por ID para evaluar condiciones de minutos/m90s/edad/posición/nacionalidad
+agg = pre.groupby("ID").agg({
+    "Minutos_jugados": "sum",
+    "M90s_jugados": "sum",
+    "Edad": "first",
+    "Posicion_general": "first",
+    "Posicion_detallada": (lambda s: s.dropna().iloc[0] if not s.dropna().empty else None),
+    "Nacionalidad_2": "first",
+    "Nacionalidad": "first",
+}).reset_index()
+
+# 3) Nacionalidad a usar según toggle
+if usar_nacionalidad_detallada and "Nacionalidad" in agg.columns:
+    nac_col = "Nacionalidad"
+else:
+    nac_col = "Nacionalidad_2" if "Nacionalidad_2" in agg.columns else None
+
+# 4) Condiciones por ID
+cond = (
+    (agg["Minutos_jugados"] >= min_jugados) &
+    (agg["M90s_jugados"]  >= min_m90s) &
+    (agg["Edad"].between(edad_range[0], edad_range[1], inclusive="both")) &
+    (agg["Posicion_general"].isin(pos_gen_sel))
+)
+if pos_det_sel:
+    cond &= agg["Posicion_detallada"].isin(pos_det_sel)
+if nac_col and len(nac2_sel) > 0:
+    cond &= agg[nac_col].isin(nac2_sel)
+
+ids_ok = agg.loc[cond, "ID"].astype(pre["ID"].dtype).tolist()
+
+# 5) Muestra final: conservar TODAS las filas (torneos) de los IDs válidos
+df = pre[pre["ID"].isin(ids_ok)].copy()
 
 if df.empty:
     st.warning("⚠️ No hay jugadores que cumplan los filtros aplicados. Ajusta los filtros para continuar.")
@@ -422,9 +609,38 @@ if "Equipo_data_full" not in df_all.columns and "Equipo_data" in df_all.columns:
     else:
         df_all["Equipo_data_full"] = df_all["Equipo_data"].astype(str)
 
+
+# --- Normalizar temporada en las etiquetas de selección (evitar 2025.0) ---
 ids_disponibles = df_all.dropna(subset=["ID", "ID_Display"]).copy()
 ids_disponibles = ids_disponibles[["ID", "ID_Display", "Equipo_data_full", "Temporada"]].drop_duplicates()
-ids_disponibles = ids_disponibles.sort_values("ID_Display", key=lambda s: s.map(_sort_key_az))
+
+ids_disponibles["ID_Display"] = (
+    ids_disponibles["ID_Display"].astype(str)
+    .str.replace(r"(?<!\d)(\d{4})\.0(?!\d)", r"\1", regex=True)
+)
+
+# Etiqueta "limpia" para mostrar al usuario:
+# - Elimina SOLO un prefijo literal ". " al inicio (no elimina iniciales como "K. ").
+def _clean_id_display_label(s: str) -> str:
+    s = str(s)
+    s = re.sub(r"^\.\s+", "", s)  # quita ". " inicial
+    return s.strip()
+
+ids_disponibles["ID_Display_clean"] = ids_disponibles["ID_Display"].map(_clean_id_display_label)
+
+# Ordenar por la etiqueta limpia (A→Z, ignorando tildes)
+ids_disponibles = ids_disponibles.sort_values("ID_Display_clean", key=lambda s: s.map(_sort_key_az))
+
+# Mapa: etiqueta limpia → etiqueta original (para guardar internamente el ID_Display real)
+label_to_orig = dict(zip(ids_disponibles["ID_Display_clean"], ids_disponibles["ID_Display"]))
+
+# Vista entera de Temprorada (por si se usa en otros textos de UI)
+if "Temporada" in ids_disponibles.columns:
+    ids_disponibles["Temporada_int"] = (
+        pd.to_numeric(ids_disponibles["Temporada"], errors="coerce")
+        .round()
+        .astype("Int64")
+    )
 
 ## -------------------- FLUJO DE SELECCIÓN DE JUGADORES Y TORNEOS --------------------
 # Funciones auxiliares para resetear selección
@@ -447,22 +663,25 @@ with st.expander(expander_title, expanded=True):
         with st.form("seleccion_jugadores"):
             col1, col2 = st.columns(2)
             with col1:
-                jugador_1_display = st.selectbox(
+                jugador_1_label = st.selectbox(
                     "Jugador 1",
-                    sorted(ids_disponibles["ID_Display"]),
+                    ids_disponibles["ID_Display_clean"].tolist(),
                     key="1v1_jugador_1_select"
                 )
             with col2:
-                jugador_2_display = st.selectbox(
+                jugador_2_label = st.selectbox(
                     "Jugador 2",
-                    sorted(ids_disponibles["ID_Display"]),
+                    ids_disponibles["ID_Display_clean"].tolist(),
                     key="1v1_jugador_2_select"
                 )
             submit_jugadores = st.form_submit_button("Confirmar jugadores")
         if submit_jugadores:
-            if jugador_1_display == jugador_2_display:
+            if jugador_1_label == jugador_2_label:
                 st.warning("Debes seleccionar dos jugadores distintos.")
             else:
+                # Mapear etiqueta limpia → etiqueta original para mantener la lógica interna
+                jugador_1_display = label_to_orig.get(jugador_1_label, jugador_1_label)
+                jugador_2_display = label_to_orig.get(jugador_2_label, jugador_2_label)
                 st.session_state['1v1_jugador_1_display'] = jugador_1_display
                 st.session_state['1v1_jugador_2_display'] = jugador_2_display
                 st.session_state['1v1_torneos_1'] = None
@@ -661,7 +880,7 @@ if st.session_state['1v1_step'] == 3:
         <style>
         .player-card{display:flex;gap:16px;padding:14px 16px;border-radius:14px;
                       background:linear-gradient(180deg,rgba(0,0,0,.04),rgba(0,0,0,.02));
-                      border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px rgba(0,0,0,.06);position:relative}
+                      border:1px solid rgba(0,0,0,.08);box-shadow:0 2px 8px rgba(0,0,0,.06);position:relative;margin-bottom:12px}
         .player-card:before{content:'';position:absolute;inset:0;border-top:4px solid var(--accent,#444);border-radius:14px}
         .pc-left{display:flex;flex-direction:column;align-items:center;gap:8px;min-width:84px}
         .pc-avatar{width:68px;height:68px;border-radius:50%;object-fit:cover;filter:grayscale(15%)}
@@ -1055,33 +1274,11 @@ if st.session_state['1v1_step'] == 3:
     st.markdown(_center_caption(info_md), unsafe_allow_html=True)
     col3 = st.columns(1)
 
-
     # Nombres de columnas
     nombre_1 = f"{jugador_1['Nombre_transfermarket']} - {jugador_1['Temporada']}"
     nombre_2 = f"{jugador_2['Nombre_transfermarket']} - {jugador_2['Temporada']}"
     col_perc_1 = "Percentil 1"
     col_perc_2 = "Percentil 2"
-
-    # JS renderer dinámico para barras
-    def barra_percentil_js(es_jugador_1=True):
-        return JsCode(f"""
-        function(params) {{
-            var value = params.value;
-            var rowData = params.data;
-            var perc1 = parseInt(rowData['Percentil 1']);
-            var perc2 = parseInt(rowData['Percentil 2']);
-            var color;
-            if ({'true' if es_jugador_1 else 'false'}) {{
-                color = perc1 > perc2 ? '#2ecc71' : perc1 < perc2 ? '#e74c3c' : '#f1c40f';
-            }} else {{
-                color = perc2 > perc1 ? '#2ecc71' : perc2 < perc1 ? '#e74c3c' : '#f1c40f';
-            }}
-            params.eGridCell.innerHTML = "<div style='display:flex; align-items:center; justify-content:space-between; height:100%;'>" +
-                "<div style='flex-grow:1; background-color: #3a3a3a; border-radius: 5px; height: 5px; display:flex; align-items:center; margin:auto;'>" +
-                "<div style='width: " + value + "%; background-color: " + color + "; height: 5px; border-radius: 5px;'></div>" +
-                "</div><div style='margin-left:8px;'>" + value + "%</div></div>";
-        }}
-        """)
 
     # Datos
     datos_tabla = []
@@ -1102,16 +1299,229 @@ if st.session_state['1v1_step'] == 3:
             col_perc_2: perc_2
         })
 
-    df_tabla = pd.DataFrame(datos_tabla).sort_values(by=col_perc_1, ascending=False)
+    # Respetar el orden de `seleccionadas_radar` (por bloques y A→Z)
+    df_tabla = pd.DataFrame(datos_tabla)
 
-    # AgGrid
-    gb = GridOptionsBuilder.from_dataframe(df_tabla)
-    gb.configure_grid_options(domLayout='normal', pagination=False, suppressHorizontalScroll=False, autoSizeAllColumns=True)
-    gb.configure_column(col_perc_1, cellRenderer=barra_percentil_js(es_jugador_1=True))
-    gb.configure_column(col_perc_2, cellRenderer=barra_percentil_js(es_jugador_1=False))
-    fila_altura = 35  # Altura promedio por fila en píxeles
-    padding_extra = 10  # Espacio extra para encabezados, barras, etc.
+    # --- Tabla moderna (alternativa a AgGrid): valores y percentiles por métrica (comparativa)
+    st.markdown("#### Tabla moderna: valores y percentiles por métrica (comparativa)")
 
-    altura_dinamica = len(df_tabla) * fila_altura + padding_extra
-    AgGrid(df_tabla, gridOptions=gb.build(), allow_unsafe_jscode=True, height = altura_dinamica, fit_columns_on_grid_load=True,
-            key=f"radar_simple_{jugador_1['ID']}_{jugador_2['ID']}")
+    # CSS (ligero, funciona en claro/oscuro)
+    tbl_css_cmp = """
+    <style>
+    .table-modern{width:100%;border-collapse:separate;border-spacing:0 8px;table-layout:fixed}
+    .table-modern th{font-size:.85rem;text-align:center;opacity:.85;padding:6px 10px}
+    .table-modern td{background:rgba(0,0,0,.03);padding:10px;border:1px solid rgba(0,0,0,.06)}
+    .table-modern td:first-child{border-top-left-radius:10px;border-bottom-left-radius:10px}
+    .table-modern td:last-child{border-top-right-radius:10px;border-bottom-right-radius:10px}
+    .badge-metric{font-weight:600}
+    .td-center{text-align:center}
+    .metric-center{text-align:center;font-weight:600}
+
+    /* Progress bars */
+    .pbar-wrap{display:flex;align-items:center;gap:10px}
+    .pbar-wrap-rtl{display:flex;align-items:center;gap:10px}
+    .pbar{flex:1;height:10px;border-radius:999px;background:rgba(0,0,0,.08);overflow:hidden}
+    .pbar-rtl{transform:scaleX(-1);transform-origin:center}
+    .pbar>span{display:block;height:100%;border-radius:inherit}
+    .pct-label{width:42px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+    .pct-label-left{width:42px;text-align:left;font-variant-numeric:tabular-nums;font-weight:700}
+
+    /* Grouped headers */
+    .th-group{font-weight:700}
+    .th-metric{font-weight:700}
+    .th-sub{font-weight:600;opacity:.8}
+
+    /* Fixed column widths */
+    .table-modern col.c1{width:10%}
+    .table-modern col.c2{width:24%}
+    .table-modern col.c3{width:32%}
+    .table-modern col.c4{width:24%}
+    .table-modern col.c5{width:10%}
+
+    @media (prefers-color-scheme: dark){
+      .table-modern td{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.08)}
+      .pbar{background:rgba(255,255,255,.12)}
+    }
+    </style>
+    """
+
+    def _bar_html_from_pct(pct):
+        if pct is None:
+            return "<div class='pbar'><span style='width:0%'></span></div>", "N/D"
+        try:
+            p = float(pct)
+        except Exception:
+            p = 0.0
+        p = max(0.0, min(100.0, p))
+        hue = int(round((p/100.0)*120))  # 0=rojo, 120=verde
+        bar = f"<div class='pbar'><span style='width:{p}%;background:hsl({hue},70%,45%);'></span></div>"
+        lab = f"{int(round(p))}%"
+        return bar, lab
+
+    def _bar_html_from_pct_rtl(pct):
+        if pct is None:
+            return "<div class='pbar pbar-rtl'><span style='width:0%'></span></div>", "N/D"
+        try:
+            p = float(pct)
+        except Exception:
+            p = 0.0
+        p = max(0.0, min(100.0, p))
+        hue = int(round((p/100.0)*120))  # 0=rojo, 120=verde
+        bar = f"<div class='pbar pbar-rtl'><span style='width:{p}%;background:hsl({hue},70%,45%);'></span></div>"
+        lab = f"{int(round(p))}%"
+        return bar, lab
+
+    rows_html_cmp = []
+    for r in df_tabla.to_dict(orient="records"):
+        met = _sanitize_text(r.get("Métrica", ""))
+        v1_fmt = _sanitize_text(r.get(nombre_1, ""))
+        v2_fmt = _sanitize_text(r.get(nombre_2, ""))
+        p1    = r.get(col_perc_1, None)
+        p2    = r.get(col_perc_2, None)
+
+        bar1_rtl, lab1 = _bar_html_from_pct_rtl(p1 if (p1 is not None and pd.notna(p1)) else None)
+        bar2,     lab2 = _bar_html_from_pct(p2 if (p2 is not None and pd.notna(p2)) else None)
+
+        # Determinar ganador según el valor real (considerando métricas invertidas)
+        try:
+            v1_num = float(jugador_1.get(met, np.nan))
+        except Exception:
+            v1_num = np.nan
+        try:
+            v2_num = float(jugador_2.get(met, np.nan))
+        except Exception:
+            v2_num = np.nan
+
+        lower_better = isinstance(metricas_invertir_ctx, (set, list, dict)) and (met in metricas_invertir_ctx)
+        winner = None
+        if not np.isnan(v1_num) and not np.isnan(v2_num):
+            if lower_better:
+                if v1_num < v2_num: winner = 1
+                elif v2_num < v1_num: winner = 2
+            else:
+                if v1_num > v2_num: winner = 1
+                elif v2_num > v1_num: winner = 2
+
+        win1 = "<span class='win'> 🔼</span>" if winner == 1 else ""
+        win2 = "<span class='win'> 🔼</span>" if winner == 2 else ""
+
+        rows_html_cmp.append(
+            "<tr>"
+            # 1) Valor Jugador 1 (centrado)
+            f"<td class='td-center'>{v1_fmt}{win1}</td>"
+            # 2) Percentil Jugador 1 (label a la izquierda, barra de der→izq)
+            f"<td><div class='pbar-wrap-rtl'><div class='pct-label-left'>{lab1}</div>{bar1_rtl}</div></td>"
+            # 3) Métrica (centrada)
+            f"<td class='metric-center'>{met}</td>"
+            # 4) Percentil Jugador 2 (tal cual estaba: barra + label a la derecha)
+            f"<td><div class='pbar-wrap'>{bar2}<div class='pct-label'>{lab2}</div></div></td>"
+            # 5) Valor Jugador 2 (tal cual + icono)
+            f"<td>{v2_fmt}{win2}</td>"
+            "</tr>"
+        )
+
+    colgroup_html = (
+        "<colgroup>"
+        "<col class='c1'>"
+        "<col class='c2'>"
+        "<col class='c3'>"
+        "<col class='c4'>"
+        "<col class='c5'>"
+        "</colgroup>"
+    )
+
+    header_html = (
+        "<thead>"
+        "<tr>"
+        f"<th colspan='2' class='th-group'>{_sanitize_text(nombre_1)}</th>"
+        "<th rowspan='2' class='th-metric'>Métrica</th>"
+        f"<th colspan='2' class='th-group'>{_sanitize_text(nombre_2)}</th>"
+        "</tr>"
+        "<tr>"
+        "<th class='th-sub'>Valor</th>"
+        "<th class='th-sub'>Percentil</th>"
+        "<th class='th-sub'>Percentil</th>"
+        "<th class='th-sub'>Valor</th>"
+        "</tr>"
+        "</thead>"
+    )
+
+    tabla_cmp_html = (
+        tbl_css_cmp +
+        "<table class='table-modern'>" +
+        colgroup_html +
+        header_html +
+        "<tbody>" + "".join(rows_html_cmp) + "</tbody></table>"
+    )
+    st.markdown(tabla_cmp_html, unsafe_allow_html=True)
+
+    # Aclaración breve sobre percentiles
+    st.markdown(
+        """
+        *Nota:* el **percentil** indica la posición relativa dentro de la muestra. Por ejemplo,
+        estar en el **percentil 99** significa que el jugador está igual o por encima del 99% de los
+        jugadores de la muestra en esa métrica (solo ~1% lo supera). Un **percentil 50** es la mediana.
+        """
+    )
+
+    # -------------------- BLOQUE NUEVO: Radares StatsBomb por bloque --------------------
+    # Para cada bloque, mostramos dos radares (J1 a la izquierda, J2 a la derecha)
+    # tomando únicamente las métricas seleccionadas que pertenezcan a ese bloque.
+
+    st.markdown("---")
+    st.markdown("### Radares por bloque (StatsBomb)")
+
+    # Orden de bloques (máximo 6 filas) — si no hay métricas de ese bloque, se omite
+    _bloques_sb = [
+        ("Portero", metricas_portero),
+        ("Físicas", metricas_fisicas),
+        ("Centros", metricas_centros),
+        ("Construcción (general)", metricas_construccion_general),
+        ("Construcción (ofensiva)", metricas_construccion_ofensiva),
+        ("Ofensivas", metricas_ofensivas),
+        ("Balón parado", metricas_balon_parado),
+    ]
+
+    for _nombre_bloque, _lista_bloque in _bloques_sb:
+        # Métricas del bloque basadas en el universo (no solo las seleccionadas),
+        # filtradas por modo (90/Totales) y existencia en el DataFrame de comparación
+        _tipos_validos_blk = ["/90", "Porcentaje"] if modo_90 else ["Totales", "Porcentaje"]
+        _mets_block = [
+            m for m in _lista_bloque
+            if (m in considerar_dict)
+            and (considerar_dict[m] in _tipos_validos_blk)
+            and (m in df_comparacion.columns)
+        ]
+        if len(_mets_block) < 3:
+            # Si hay menos de 3 no se renderiza para evitar radares poco informativos
+            continue
+
+        # Títulos por jugador para este bloque
+        _title_j1 = f"{_nombre_bloque} — {jugador_1['Nombre_transfermarket']} - {jugador_1['Equipo_data']} - {jugador_1['Temporada']}"
+        _title_j2 = f"{_nombre_bloque} — {jugador_2['Nombre_transfermarket']} - {jugador_2['Equipo_data']} - {jugador_2['Temporada']}"
+
+        c1, c2 = st.columns(2)
+        with c1:
+            _fig_j1_blk = crear_radar_statsbomb(
+                jugador_1,
+                df_comparacion,
+                _mets_block,
+                metricas_invertir,
+                _title_j1,
+                usar_percentiles=usar_percentiles_sb,
+                subtitulo=None,
+                modo_claro=modo_claro,
+            )
+            st.pyplot(_fig_j1_blk)
+        with c2:
+            _fig_j2_blk = crear_radar_statsbomb(
+                jugador_2,
+                df_comparacion,
+                _mets_block,
+                metricas_invertir,
+                _title_j2,
+                usar_percentiles=usar_percentiles_sb,
+                subtitulo=None,
+                modo_claro=modo_claro,
+            )
+            st.pyplot(_fig_j2_blk)

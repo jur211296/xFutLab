@@ -178,7 +178,27 @@ metricas_default_por_posicion = {
                         "Regates exitosos %",
                         "Pases progresivos", "Pases progresivos /90",
                         "Pases al último tercio", "Pases al último tercio /90"],
+    "Carrilero derecho": ["Acciones defensivas ganadas", "Acciones defensivas ganadas /90",
+                        "Duelos defensivos", "Duelos defensivos /90",
+                        "Duelos defensivos ganados %",
+                        "Asistencias a disparos", "Asistencias a disparos /90",
+                        "Centros desde la derecha", "Centros desde la derecha /90",
+                        "Centros desde la derecha exitosos %",
+                        "Centros desde último tercio", "Centros desde último tercio /90",
+                        "Regates exitosos %",
+                        "Pases progresivos", "Pases progresivos /90",
+                        "Pases al último tercio", "Pases al último tercio /90"],
     "Lateral izquierdo": ["Acciones defensivas ganadas", "Acciones defensivas ganadas /90",
+                        "Duelos defensivos", "Duelos defensivos /90",
+                        "Duelos defensivos ganados %",
+                        "Asistencias a disparos", "Asistencias a disparos /90",
+                        "Centros desde la izquierda", "Centros desde la izquierda /90",
+                        "Centros desde la izquierda exitosos %",
+                        "Centros desde último tercio", "Centros desde último tercio /90",
+                        "Regates exitosos %",
+                        "Pases progresivos", "Pases progresivos /90",
+                        "Pases al último tercio", "Pases al último tercio /90"],
+    "Carrilero izquierdo": ["Acciones defensivas ganadas", "Acciones defensivas ganadas /90",
                         "Duelos defensivos", "Duelos defensivos /90",
                         "Duelos defensivos ganados %",
                         "Asistencias a disparos", "Asistencias a disparos /90",
@@ -311,57 +331,90 @@ from scipy.stats import rankdata
 # Será completado al aplicar_metricas_personalizadas
 metricas_porcentaje = []
 
-def obtener_percentiles(jugador, df_base, metricas, metricas_invertir=[]):
+def obtener_percentiles(jugador, df_base, metricas, metricas_invertir=None):
     """
-    Calcula el percentil de un jugador respecto a un conjunto base (df_base) para las métricas indicadas.
-    Devuelve una lista de percentiles (0–100).
+    Calcula percentiles (0–100) del jugador respecto a `df_base` para las métricas indicadas.
+    Soporta `jugador` como Series, dict o DataFrame de 1 fila.
+
+    Reglas:
+    - Percentil = proporción de valores de la muestra <= valor del jugador (ECDF * 100).
+    - Si la métrica está en `metricas_invertir`, se refleja: 100 - percentil.
+    - No se reemplazan 0→NaN en métricas diferenciales (Goles-xG, Asistencias-xA, y sus /90, con o sin espacios/hífen).
+    - En el resto de métricas, 0 se trata como missing para evitar sesgos por ceros estructurales.
     """
-    percentiles = []
-    jugador_id = jugador.get("ID", None)
-
-    # Asegurar que df_base tenga índice por ID
-    df_base = df_base.set_index("ID") if "ID" in df_base.columns else df_base
-
-    # Insertar el jugador si no está en el dataset base
-    if jugador_id and jugador_id not in df_base.index:
-        jugador_df = jugador.to_frame().T if isinstance(jugador, pd.Series) else pd.DataFrame([jugador])
-        jugador_df.index = [jugador_id]
-        df_extendido = pd.concat([df_base, jugador_df])
+    # Normalizar jugador a una "fila" accesible
+    if isinstance(jugador, pd.DataFrame):
+        jrow = jugador.iloc[0] if len(jugador) > 0 else pd.Series(dtype=float)
     else:
-        df_extendido = df_base.copy()
+        jrow = jugador
 
-    metricas_diferenciales = [
-    "Goles - xG", "Goles - xG /90", "Asistencias - xA", "Asistencias - xA /90",
-    "Goles - xG (en contra)", "Goles - xG (en contra) /90"]
-    
-    for metrica in metricas:
-        if metrica in df_extendido.columns:
-            # Solo reemplazar 0 por NaN en métricas que no sean diferenciales
-            if metrica in metricas_diferenciales:
-                serie = df_extendido[metrica].copy()
-            else:
-                serie = df_extendido[metrica].replace(0, np.nan)
+    # Conjunto de métricas donde 0 es un valor válido (no convertir a NaN)
+    bases_diff = [
+        "Goles - xG", "Asistencias - xA", "Goles - xG (en contra)",
+    ]
+
+    def _canon(name: str) -> str:
+        return str(name).replace(" ", "").replace("_", "").replace("-", "").lower()
+
+    diffs_canon = set()
+    for b in bases_diff:
+        diffs_canon.add(_canon(b))
+        diffs_canon.add(_canon(f"{b} /90"))
+
+    inv_set = set(metricas_invertir) if metricas_invertir is not None else set()
+
+    def _get_scalar(row_like, key):
+        """Obtiene un escalar seguro desde row_like[key]."""
+        try:
+            val = row_like[key] if isinstance(row_like, (pd.Series, dict)) else getattr(row_like, key)
+        except Exception:
+            try:
+                val = row_like.get(key, None)
+            except Exception:
+                val = None
+        # Si es secuencia o Serie, tomar el primer elemento
+        if isinstance(val, (pd.Series, pd.Index, list, tuple)):
+            if len(val) == 0:
+                return None
+            try:
+                return val.iloc[0] if hasattr(val, "iloc") else val[0]
+            except Exception:
+                return None
+        return val
+
+    out = []
+
+    for m in metricas:
+        # Valor del jugador
+        raw_val = _get_scalar(jrow, m)
+        try:
+            v = float(raw_val)
+        except Exception:
+            v = float("nan")
+
+        # Serie base limpia
+        if m not in df_base.columns:
+            out.append(0)
+            continue
+        serie = pd.to_numeric(df_base[m], errors="coerce").replace([float('inf'), -float('inf')], pd.NA)
+
+        # 0 como NaN salvo en diferenciales
+        if _canon(m) not in diffs_canon:
+            serie = serie.replace(0, pd.NA)
+        serie = serie.dropna()
+
+        if len(serie) == 0 or pd.isna(v):
+            pct = 0.0
         else:
-            serie = pd.Series(dtype=float)
+            # ECDF inclusiva
+            pct = float((serie <= v).mean()) * 100.0
+            if m in inv_set:
+                pct = 100.0 - pct
+        # Clipping y entero
+        pct = max(0.0, min(100.0, pct))
+        out.append(int(round(pct)))
 
-        val = serie.loc[jugador_id] if jugador_id in serie.index else np.nan
-
-        if pd.notnull(val):
-            serie_sin_nan = serie.dropna()
-            if len(serie_sin_nan) == 0:
-                percentil = 0
-            else:
-                ranks = rankdata(serie_sin_nan, method='average')
-                posicion = serie_sin_nan.index.get_loc(jugador_id)
-                percentil = ranks[posicion] / len(serie_sin_nan)
-                if metrica in metricas_invertir:
-                    percentil = 1 - percentil
-        else:
-            percentil = 0
-
-        percentiles.append(int(percentil * 100))
-
-    return percentiles
+    return out
 
 # Función de formateo general para tablas, tooltips, hovertext
 def formatear_valor(metrica, valor):
