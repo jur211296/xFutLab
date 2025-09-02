@@ -296,36 +296,60 @@ with st.expander("🔍 Filtros de jugadores a analizar", expanded=True):
         st.warning("No hay datos para los filtros actuales de País/Torneo.")
         st.stop()
 
-    # --- Defaults reactivos para Minutos y M90s (1/3 del máximo) + preinicialización segura ---
-    # Contexto que fuerza reseteo al cambiar Temporada/Torneo/Equipo
-    ctx_hash = f"{int(temporada)}|{';'.join(sorted(map(str, torneos_sel)))}|{';'.join(sorted(map(str, equipos_sel)))}"
+    # --- Defaults reactivos (1/3 del país con máximo menor) + preinicialización segura ---
+    # Contexto que fuerza reseteo al cambiar Temporada/País/Torneo/Equipo
+    ctx_hash_pers = f"{int(temporada)}|{';'.join(sorted(map(str, paises_sel)))}|{';'.join(sorted(map(str, torneos_sel)))}|{';'.join(sorted(map(str, equipos_sel)))}"
 
-    # Máximos actuales en la muestra base
-    min_jugados_max = int(df_filtros.get("Minutos_jugados", pd.Series([0])).max())
-    max_m90 = int(df_filtros.get("M90s_jugados", pd.Series([0])).max())
+    # Máximos actuales agregados por ID (suma entre torneos) para rango de sliders
+    if not df_filtros.empty:
+        agg_max = df_filtros.groupby("ID")[["Minutos_jugados", "M90s_jugados"]].sum().reset_index()
+        min_jugados_max = int(agg_max["Minutos_jugados"].max()) if not agg_max.empty else 0
+        max_m90 = int(agg_max["M90s_jugados"].max()) if not agg_max.empty else 0
+    else:
+        min_jugados_max, max_m90 = 0, 0
 
+    # Paso dinámico para minutos
+    if min_jugados_max >= 300:
+        step_minjug = 50
+    elif min_jugados_max >= 120:
+        step_minjug = 20
+    else:
+        step_minjug = 10
+
+    # Helper 1/3 con redondeo a múltiplo de step
     def _third_of(n: int, step: int = 1) -> int:
-      try:
-          n = int(n)
-      except Exception:
-          return 0
-      if n <= 0:
-          return 0
-      val = int(np.ceil(n / 3))
-      if step > 1:
-          val = int(np.ceil(val / step) * step)
-      return min(val, n)
+        try:
+            n = int(n)
+        except Exception:
+            return 0
+        if n <= 0:
+            return 0
+        val = int(np.ceil(n / 3.0))
+        if step > 1:
+            val = int(np.ceil(val / step) * step)
+        return min(val, n)
 
-    default_min_jug = _third_of(min_jugados_max, step=50)
-    default_min_m90 = _third_of(max_m90, step=1)
+    # Base 1/3: por cada País seleccionado tomar el máx de minutos por ID, luego el mínimo entre esos países
+    scope = df_temp[
+        df_temp["Pais"].isin(paises_sel) & df_temp["Torneo"].isin(torneos_sel)
+    ].copy()
+    if not scope.empty:
+        mins_per_id = scope.groupby(["Pais", "ID"])["Minutos_jugados"].sum()
+        per_pais_max = mins_per_id.groupby("Pais").max()
+        base_for_third = int(per_pais_max.min()) if not per_pais_max.empty else min_jugados_max
+    else:
+        base_for_third = min_jugados_max
 
-    # Reseteo al cambiar el contexto
-    if st.session_state.get("pers_ctx_hash_minmax") != ctx_hash:
+    default_min_jug = _third_of(base_for_third, step=step_minjug)
+    default_min_m90 = 0  # M90s por defecto siempre 0
+
+    # Reseteo al cambiar el contexto (evita warnings: no mezclar value= con key)
+    if st.session_state.get("pers_ctx_hash_minmax") != ctx_hash_pers:
         st.session_state["pers_min_jugados_value"] = default_min_jug
         st.session_state["pers_min_m90s_value"] = default_min_m90
-        st.session_state["pers_ctx_hash_minmax"] = ctx_hash
+        st.session_state["pers_ctx_hash_minmax"] = ctx_hash_pers
 
-    # Preinicializar para evitar warning (no combinar value= con key)
+    # Preinicializar para evitar warning de Streamlit
     st.session_state.setdefault("pers_min_jugados_value", default_min_jug)
     st.session_state.setdefault("pers_min_m90s_value", default_min_m90)
 
@@ -335,7 +359,7 @@ with st.expander("🔍 Filtros de jugadores a analizar", expanded=True):
             "Minutos jugados (mínimo)",
             0,
             max(min_jugados_max, 0),
-            step=50,
+            step=step_minjug,
             key="pers_min_jugados_value",
         )
     with col5:
@@ -432,26 +456,52 @@ with st.expander("🔍 Filtros de jugadores a analizar", expanded=True):
                 nac2_sel = []
 
 
-# --- Filtro final aplicado sobre df_temp ---
+# --- Filtro final aplicado sobre df_temp (agregar por ID para cortes y luego conservar torneos) ---
 if df_temp.empty:
     st.warning("No hay datos para la temporada seleccionada.")
     st.stop()
 
-df = df_temp[
-    (df_temp["Pais"].isin(paises_sel)) &
-    (df_temp["Torneo"].isin(torneos_sel)) &
-    ((df_temp["Equipo_data"].isin(equipos_sel)) if ("Equipo_data" in df_temp.columns and equipos_sel) else True) &
-    (df_temp["Minutos_jugados"] >= min_jugados) &
-    (df_temp["M90s_jugados"] >= min_m90s) &
-    (df_temp["Edad"] >= edad_range[0]) & (df_temp["Edad"] <= edad_range[1]) &
-    (df_temp["Posicion_general"].isin(pos_gen_sel)) &
-    (df_temp["Posicion_detallada"].isin(pos_det_sel)) &
-    (
-        df_temp["Nacionalidad"].isin(nac2_sel)
-        if usar_nacionalidad_detallada and "Nacionalidad" in df_temp.columns
-        else df_temp["Nacionalidad_2"].isin(nac2_sel) if "Nacionalidad_2" in df_temp.columns else True
-    )
-].copy()
+# Muestra base por País/Torneo/Equipo (sin cortes de minutos/edad todavía)
+pre_mask = (df_temp["Pais"].isin(paises_sel)) & (df_temp["Torneo"].isin(torneos_sel))
+if "Equipo_data" in df_temp.columns and equipos_sel:
+    pre_mask &= df_temp["Equipo_data"].isin(equipos_sel)
+pre = df_temp[pre_mask].copy()
+
+if pre.empty:
+    st.warning("⚠️ No hay jugadores para País/Torneo/Equipo seleccionados.")
+    st.stop()
+
+# Agregado por ID para evaluar cortes
+agg = pre.groupby("ID").agg({
+    "Minutos_jugados": "sum",
+    "M90s_jugados": "sum",
+    "Edad": "first",
+    "Posicion_general": "first",
+    "Posicion_detallada": (lambda s: s.dropna().iloc[0] if not s.dropna().empty else None),
+    "Nacionalidad_2": "first",
+    "Nacionalidad": "first",
+}).reset_index()
+
+# Condiciones por ID
+cond = (
+    (agg["Minutos_jugados"] >= min_jugados) &
+    (agg["M90s_jugados"]  >= min_m90s) &
+    (agg["Edad"].between(int(edad_range[0]), int(edad_range[1]), inclusive="both")) &
+    (agg["Posicion_general"].isin(pos_gen_sel))
+)
+if pos_det_sel:
+    cond &= agg["Posicion_detallada"].isin(pos_det_sel)
+
+# Nacionalidad (detallada o agrupada)
+if usar_nacionalidad_detallada and "Nacionalidad" in agg.columns:
+    if nac2_sel:
+        cond &= agg["Nacionalidad"].isin(nac2_sel)
+else:
+    if "Nacionalidad_2" in agg.columns and nac2_sel:
+        cond &= agg["Nacionalidad_2"].isin(nac2_sel)
+
+ids_ok = agg.loc[cond, "ID"].tolist()
+df = pre[pre["ID"].isin(ids_ok)].copy()
 
 if df.empty:
     st.warning("⚠️ No hay jugadores que cumplan los filtros aplicados. Ajusta los filtros para continuar.")
