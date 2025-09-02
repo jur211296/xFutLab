@@ -302,6 +302,7 @@ paises_sel = st.sidebar.multiselect(
     default=safe_paises_default
 )
 
+#
 # --- Torneo ---
 # Opciones de torneo según países seleccionados en el contexto actual
 if paises_sel:
@@ -314,56 +315,33 @@ else:
         df_temp["Torneo"].dropna().astype(str).str.strip().unique()
     )
 
-# Fallback por si no hubiese torneos para los países elegidos:
+# Si no hubiese torneos válidos para el contexto actual, dejamos lista vacía
 if not torneos_opciones:
-    torneos_opciones = sorted(
-        df_temp["Torneo"].dropna().astype(str).str.strip().unique()
-    )
+    torneos_opciones = []
 
 # Clave de contexto (Temporada + Países) para resetear torneos automáticamente
 ctx_tor_hash = f"{int(temporada)}|{'/'.join(sorted(map(str, paises_sel)))}"
-if st.session_state.get("radar_ctx_tor_hash") != ctx_tor_hash:
-    # Al cambiar el contexto, preseleccionamos TODOS los torneos válidos
+prev_hash = st.session_state.get("radar_ctx_tor_hash")
+prev_sel  = st.session_state.get("torneos_sel_radar", [])
+
+# IMPORTANT: Sembrar/limpiar la selección **antes** de instanciar el widget
+# - Si cambia el contexto (temporada/países), o no hay selección previa, o hay
+#   valores fuera de las opciones actuales, restablecer a "todos" los torneos.
+if (prev_hash != ctx_tor_hash) or (not prev_sel) or any(t not in set(torneos_opciones) for t in prev_sel):
     st.session_state["torneos_sel_radar"] = torneos_opciones[:]
     st.session_state["radar_ctx_tor_hash"] = ctx_tor_hash
 
-# Sanitizar selección previa con respecto a las opciones actuales
-sel_actual = [
-    t for t in st.session_state.get("torneos_sel_radar", []) if t in torneos_opciones
-] or torneos_opciones[:]
-st.session_state["torneos_sel_radar"] = sel_actual
-
-# Crear el widget (sin `default=` para evitar el warning de Streamlit)
+# Crear el widget (sin default= para evitar warnings). A partir de aquí, **no**
+# volvemos a escribir en st.session_state["torneos_sel_radar"] en este mismo run.
 torneos_sel = st.sidebar.multiselect(
     "Torneo",
     torneos_opciones,
     key="torneos_sel_radar",
 )
 
-# Si el usuario deja vacío el multiselect, lo reponemos con todas las opciones
-if len(torneos_sel) == 0 and len(torneos_opciones) > 0:
-    st.session_state["torneos_sel_radar"] = torneos_opciones[:]
-    st.rerun()
-
 # DF filtrado preliminar (pais/torneo) – hacemos copy para evitar SettingWithCopy
 mask_base = df_temp["Pais"].isin(paises_sel) & df_temp["Torneo"].isin(torneos_sel)
 df_filtros = df_temp[mask_base].copy()
-
-# Auto‑fix: si la combinación actual deja la muestra vacía, cargamos todos los
-# torneos válidos para los países seleccionados (o, si tampoco hubiese, todos).
-if df_filtros.empty:
-    torneos_fallback = sorted(
-        df_temp.loc[df_temp["Pais"].isin(paises_sel), "Torneo"]
-        .dropna().astype(str).str.strip().unique()
-    )
-    if torneos_fallback and set(torneos_sel).isdisjoint(torneos_fallback):
-        st.session_state["torneos_sel_radar"] = torneos_fallback
-        st.rerun()
-    # Fallback global (p. ej. si no hay datos para los países elegidos)
-    torneos_all = sorted(df_temp["Torneo"].dropna().astype(str).str.strip().unique())
-    if torneos_all and set(torneos_sel).isdisjoint(torneos_all):
-        st.session_state["torneos_sel_radar"] = torneos_all
-        st.rerun()
 
 
 # -------------------- FILTROS RESTANTES EN SIDEBAR --------------------
