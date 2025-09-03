@@ -1558,7 +1558,7 @@ if st.session_state['1v1_step'] == 3:
 # ========================================================================
 
     st.markdown("---")
-    st.markdown("### Radares comparativos por bloque")
+    st.markdown("### Radares comparativos por bloque de métricas")
 
     # Helper: elegir métricas del universo del bloque (no sólo seleccionadas)
     # - Respeta el modo (Por 90' / Totales) usando considerar_dict
