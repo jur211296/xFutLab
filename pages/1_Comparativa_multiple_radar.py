@@ -321,22 +321,22 @@ if not torneos_opciones:
 
 # Clave de contexto (Temporada + Países) para resetear torneos automáticamente
 ctx_tor_hash = f"{int(temporada)}|{'/'.join(sorted(map(str, paises_sel)))}"
-prev_hash = st.session_state.get("radar_ctx_tor_hash")
-prev_sel  = st.session_state.get("torneos_sel_radar", [])
+prev_hash = st.session_state.get("multi_radar_ctx_tor_hash")
+prev_sel  = st.session_state.get("torneos_sel_multi", [])
 
 # IMPORTANT: Sembrar/limpiar la selección **antes** de instanciar el widget
 # - Si cambia el contexto (temporada/países), o no hay selección previa, o hay
 #   valores fuera de las opciones actuales, restablecer a "todos" los torneos.
 if (prev_hash != ctx_tor_hash) or (not prev_sel) or any(t not in set(torneos_opciones) for t in prev_sel):
-    st.session_state["torneos_sel_radar"] = torneos_opciones[:]
-    st.session_state["radar_ctx_tor_hash"] = ctx_tor_hash
+    st.session_state["torneos_sel_multi"] = torneos_opciones[:]
+    st.session_state["multi_radar_ctx_tor_hash"] = ctx_tor_hash
 
 # Crear el widget (sin default= para evitar warnings). A partir de aquí, **no**
-# volvemos a escribir en st.session_state["torneos_sel_radar"] en este mismo run.
+# volvemos a escribir en st.session_state["torneos_sel_multi"] en este mismo run.
 torneos_sel = st.sidebar.multiselect(
     "Torneo",
     torneos_opciones,
-    key="torneos_sel_radar",
+    key="torneos_sel_multi",
 )
 
 # DF filtrado preliminar (pais/torneo) – hacemos copy para evitar SettingWithCopy
